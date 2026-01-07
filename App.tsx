@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useCallback } from 'react';
 import { Layout } from './components/Layout';
 import { Login } from './pages/Login';
@@ -12,14 +13,21 @@ const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [initLoading, setInitLoading] = useState(true);
 
-  // Initialize Auth Listener
+  const clearAndRedirect = () => {
+    setCurrentUser(null);
+    window.location.reload(); // 彻底清理状态并重新加载页面
+  };
+
   useEffect(() => {
     const initAuth = async () => {
-      const user = await getCurrentUserProfile();
-      if (user) {
+      try {
+        const user = await getCurrentUserProfile();
         setCurrentUser(user);
+      } catch (e) {
+        console.error("Auth init error", e);
+      } finally {
+        setInitLoading(false);
       }
-      setInitLoading(false);
     };
     initAuth();
 
@@ -37,45 +45,16 @@ const App: React.FC = () => {
     };
   }, []);
 
-  const handleLogin = (user: User) => {
-    setCurrentUser(user);
-  };
-
   const handleLogout = async () => {
     await signOut();
-    setCurrentUser(null);
+    clearAndRedirect();
   };
 
-  // Fix: Memoize refreshUser to prevent infinite loops in child components
   const refreshUser = useCallback(async () => {
-    // We only fetch if we think we are logged in, or to check status.
     const latestUser = await getCurrentUserProfile();
-    
-    setCurrentUser(prevUser => {
-      // If we are logged out and found no user, stay logged out
-      if (!prevUser && !latestUser) return null;
-      
-      // If we were logged out but found a user, log in
-      if (!prevUser && latestUser) return latestUser;
-      
-      // If we were logged in but found no user (unlikely given auth listener), log out
-      if (prevUser && !latestUser) return null;
-
-      // If both exist, compare key fields to avoid unnecessary re-renders
-      if (prevUser && latestUser) {
-        if (
-          prevUser.balance !== latestUser.balance ||
-          prevUser.role !== latestUser.role ||
-          prevUser.username !== latestUser.username ||
-          prevUser.phone !== latestUser.phone
-        ) {
-          return latestUser;
-        }
-        // Return previous reference if data is effectively the same
-        return prevUser;
-      }
-      return prevUser;
-    });
+    if (latestUser) {
+      setCurrentUser(latestUser);
+    }
   }, []);
 
   if (initLoading) {
@@ -86,17 +65,17 @@ const App: React.FC = () => {
     );
   }
 
-  // Check if user is Admin OR Super Admin
-  const isAdminOrSuper = currentUser?.role === UserRole.ADMIN || currentUser?.role === UserRole.SUPER_ADMIN;
+  // 判定是否为管理后台角色 (老板、员工、财务、营销)
+  const isManagementRole = currentUser && currentUser.role !== UserRole.CLIENT;
 
   return (
     <ToastProvider>
       <Layout currentUser={currentUser} onLogout={handleLogout}>
         {!currentUser ? (
-          <Login onLogin={handleLogin} />
+          <Login onLogin={(user) => setCurrentUser(user)} />
         ) : (
           <>
-            {isAdminOrSuper ? (
+            {isManagementRole ? (
               <AdminDashboard currentUser={currentUser} />
             ) : (
               <ClientDashboard currentUser={currentUser} refreshUser={refreshUser} />
