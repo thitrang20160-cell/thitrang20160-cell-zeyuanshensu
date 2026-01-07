@@ -8,7 +8,7 @@ import {
   ShieldAlert, TrendingUp, Sparkles, 
   Key, PieChart, RefreshCw, Zap,
   ListChecks, BookOpen, Trash2, FileSpreadsheet, Plus, Activity,
-  ChevronDown, ChevronUp, BrainCircuit, Settings, Stethoscope, Database, PlayCircle, Trash
+  ChevronDown, ChevronUp, BrainCircuit, Settings, Stethoscope, Database, PlayCircle, Trash, FileText
 } from 'lucide-react';
 import { GoogleGenAI } from "@google/genai";
 import { useToast } from '../components/Toast';
@@ -122,13 +122,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
       results.auth = !!data.session;
     } catch (e) { results.auth = false; }
 
-    // 3. Check AI Key
+    // 3. Check AI Key (FIXED: Check Env OR Window)
     try {
+      // 只要环境变量有 Key，或者浏览器插件有 Key，都算成功
+      const hasEnvKey = !!process.env.API_KEY;
+      let hasWindowKey = false;
       if (window.aistudio) {
-        results.ai = await window.aistudio.hasSelectedApiKey();
-      } else {
-        results.ai = false;
+        try {
+           hasWindowKey = await window.aistudio.hasSelectedApiKey();
+        } catch(e) {}
       }
+      results.ai = hasEnvKey || hasWindowKey;
     } catch (e) { results.ai = false; }
 
     setDiagnosis(results);
@@ -145,7 +149,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
     setLoading(true);
     try {
         const testId = `TEST-${Date.now()}`;
-        // Create Mock Appeal
         await saveAppeal({
             id: `appeal-${Date.now()}`,
             userId: currentUser.id,
@@ -271,59 +274,65 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
     }
   };
 
-  // --- Workflow Handling ---
+  // --- Workflow Handling (FIXED: Try/Catch/Finally to prevent infinite loading) ---
   const handleSaveAppealTask = async () => {
     if (!editingAppeal) return;
     setLoading(true);
     
-    let finalStatus = editStatus;
-    let finalDeduction = editDeduction;
+    try {
+        let finalStatus = editStatus;
+        let finalDeduction = editDeduction;
 
-    if (isStaff && (editStatus === AppealStatus.PASSED || editStatus === AppealStatus.PASSED_PENDING_DEDUCTION)) {
-      finalStatus = AppealStatus.PASSED_PENDING_DEDUCTION;
-    }
+        if (isStaff && (editStatus === AppealStatus.PASSED || editStatus === AppealStatus.PASSED_PENDING_DEDUCTION)) {
+          finalStatus = AppealStatus.PASSED_PENDING_DEDUCTION;
+        }
 
-    const updatedAppeal = { 
-      ...editingAppeal, 
-      status: finalStatus, 
-      adminNotes: editNote, 
-      deductionAmount: finalDeduction, 
-      updatedAt: new Date().toISOString() 
-    };
+        const updatedAppeal = { 
+          ...editingAppeal, 
+          status: finalStatus, 
+          adminNotes: editNote, 
+          deductionAmount: finalDeduction, 
+          updatedAt: new Date().toISOString() 
+        };
 
-    await saveAppeal(updatedAppeal);
-    
-    const isBossOrFinance = isSuper || isFinance;
-    
-    if (isBossOrFinance && (finalStatus === AppealStatus.PASSED) && finalDeduction > 0) {
-       const txId = `deduct-${Date.now()}`;
-       await saveTransaction({ 
-         id: txId, 
-         userId: editingAppeal.userId, 
-         username: editingAppeal.username, 
-         type: TransactionType.DEDUCTION, 
-         amount: finalDeduction, 
-         status: TransactionStatus.PENDING, 
-         appealId: editingAppeal.id, 
-         note: `工单 ${editingAppeal.id.slice(-6)} 服务费`, 
-         createdAt: new Date().toISOString() 
-       });
-       
-       const result = await processDeductionAndCommission(txId);
-       if (result.success) {
-         showToast('工单已完结并成功扣费', 'success');
-       } else {
-         showToast('扣费失败: ' + result.error, 'error');
-       }
-    } else if (isStaff && finalStatus === AppealStatus.PASSED_PENDING_DEDUCTION) {
-       showToast('已标记为成功，提交给财务/老板核算扣费', 'info');
+        await saveAppeal(updatedAppeal);
+        
+        const isBossOrFinance = isSuper || isFinance;
+        
+        if (isBossOrFinance && (finalStatus === AppealStatus.PASSED) && finalDeduction > 0) {
+           const txId = `deduct-${Date.now()}`;
+           await saveTransaction({ 
+             id: txId, 
+             userId: editingAppeal.userId, 
+             username: editingAppeal.username, 
+             type: TransactionType.DEDUCTION, 
+             amount: finalDeduction, 
+             status: TransactionStatus.PENDING, 
+             appealId: editingAppeal.id, 
+             note: `工单 ${editingAppeal.id.slice(-6)} 服务费`, 
+             createdAt: new Date().toISOString() 
+           });
+           
+           const result = await processDeductionAndCommission(txId);
+           if (result.success) {
+             showToast('工单已完结并成功扣费', 'success');
+           } else {
+             showToast('扣费失败: ' + result.error, 'error');
+           }
+        } else if (isStaff && finalStatus === AppealStatus.PASSED_PENDING_DEDUCTION) {
+           showToast('已标记为成功，提交给财务/老板核算扣费', 'info');
     } else {
-       showToast('工单状态已更新', 'success');
+           showToast('工单状态已更新', 'success');
+        }
+        
+        setEditingAppeal(null);
+        loadData();
+    } catch (err: any) {
+        console.error("Save failed", err);
+        showToast('保存失败: ' + (err.message || '未知错误'), 'error');
+    } finally {
+        setLoading(false); // Ensure loader stops
     }
-    
-    setEditingAppeal(null);
-    loadData();
-    setLoading(false);
   };
 
   const handleEditUser = async () => {
@@ -509,14 +518,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
             </div>
           )}
 
-          {/* TAB 4: 营销业绩 */}
+          {/* TAB 4: 营销业绩 (FIXED: White Screen / Null Safe) */}
           {activeTab === 'marketing_performance' && (isSuper || isMarketing) && (
              <div className="animate-in fade-in space-y-6">
                 <div className="bg-gradient-to-br from-indigo-600 to-purple-700 p-8 rounded-2xl text-white shadow-lg relative overflow-hidden">
                    <Zap className="absolute right-0 bottom-0 opacity-10" size={120} />
                    <h4 className="text-2xl font-black mb-2">营销合伙人中心</h4>
                    <div className="flex gap-6 mt-4">
-                      <div><p className="text-xs opacity-60 uppercase">累计佣金</p><p className="text-3xl font-bold">¥{currentUser.balance.toFixed(2)}</p></div>
+                      <div><p className="text-xs opacity-60 uppercase">累计佣金</p><p className="text-3xl font-bold">¥{(currentUser.balance || 0).toFixed(2)}</p></div>
                       <div><p className="text-xs opacity-60 uppercase">专属邀请码</p><p className="text-3xl font-mono font-bold">{currentUser.marketingCode || '未分配'}</p></div>
                    </div>
                 </div>
@@ -525,7 +534,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
                    {transactions.filter(t => t.userId === currentUser.id && t.type === TransactionType.COMMISSION).map(t => (
                       <div key={t.id} className="flex justify-between items-center p-3 border-b last:border-0 hover:bg-gray-50 transition-colors">
                          <span className="text-sm text-gray-600">{t.note}</span>
-                         <span className="text-sm font-bold text-green-600">+¥{t.amount.toFixed(2)}</span>
+                         <span className="text-sm font-bold text-green-600">+¥{(t.amount || 0).toFixed(2)}</span>
                       </div>
                    ))}
                 </div>
@@ -747,14 +756,20 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
                           <div className="flex gap-4 pt-2">
                              <button onClick={() => setAiStep(1)} className="px-8 py-4 border rounded-xl font-bold text-gray-500 hover:bg-gray-50 transition-colors">重新调整</button>
                              <button onClick={() => {
-                                const blob = new Blob([aiGeneratedText], {type: 'text/plain'});
+                                // Word Export Logic: Wrap text in HTML with MS Word namespaces
+                                const htmlContent = `
+                                  <html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
+                                  <head><meta charset='utf-8'><title>POA Document</title></head>
+                                  <body><pre style="font-family: Arial; white-space: pre-wrap;">${aiGeneratedText}</pre></body>
+                                  </html>`;
+                                const blob = new Blob([htmlContent], {type: 'application/msword'});
                                 const url = window.URL.createObjectURL(blob);
                                 const a = document.createElement('a');
                                 a.href = url;
-                                a.download = `POA_${aiStoreName}.txt`;
+                                a.download = `POA_${aiStoreName}.doc`; // .doc extension triggers Word
                                 a.click();
                              }} className="flex-1 bg-indigo-600 text-white rounded-xl font-black text-lg flex items-center justify-center gap-2 shadow-xl hover:bg-indigo-700 transition-colors active:scale-95">
-                                <Download size={20}/> 下载 POA 文书
+                                <FileText size={20}/> 导出为 Word (.doc)
                              </button>
                           </div>
                        </div>
