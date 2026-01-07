@@ -86,6 +86,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
   const [isTestRunning, setIsTestRunning] = useState(false);
   const [testLogs, setTestLogs] = useState<string[]>([]);
   const [showTestModal, setShowTestModal] = useState(false);
+  const [testCreatedIds, setTestCreatedIds] = useState<{userId: string, appealId: string, txId: string} | null>(null);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -181,6 +182,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
     setIsTestRunning(true);
     setTestLogs([]);
     setShowTestModal(true);
+    setTestCreatedIds(null); // Reset IDs
     
     // Helper to add logs in real-time
     const addLog = (msg: string) => {
@@ -194,6 +196,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
         const testAppealId = `TEST-APPEAL-${uniqueId}`;
         const testTxId = `TEST-TX-${uniqueId}`;
         const testEmail = `autotest_${uniqueId}@example.com`;
+        
+        // Save IDs for later manual cleanup
+        setTestCreatedIds({ userId: testUserId, appealId: testAppealId, txId: testTxId });
 
         // 1. Create Test User
         addLog(`1. 创建测试用户 (模拟客户) ...`);
@@ -228,6 +233,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
         const { error: appealErr } = await saveAppeal(testAppeal);
         if (appealErr) throw new Error(`申诉提交失败: ${appealErr.message}`);
         addLog("   ✅ 申诉提交成功，状态: PENDING");
+        
+        // Update UI immediately so user can see it in background
+        await loadData();
 
         // 3. Staff Review
         addLog(`3. 模拟管理员/员工审核 ...`);
@@ -267,6 +275,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
         const result = await processDeductionAndCommission(testTxId);
         if (!result.success) throw new Error(`扣费逻辑执行失败: ${result.error}`);
         addLog("   ✅ 扣费逻辑返回成功");
+        
+        // Final UI Refresh
+        await loadData();
 
         // 6. Final Verification
         addLog(`6. 最终数据一致性校验 ...`);
@@ -300,14 +311,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
         addLog("-----------------------------------");
         addLog("🎉🎉🎉 测试全部通过！系统功能正常。");
         addLog("-----------------------------------");
-        
-        // Cleanup
-        addLog("7. 清理测试数据 (3秒后执行)...");
-        await new Promise(r => setTimeout(r, 3000));
-        await supabase.from('users').delete().eq('id', testUserId);
-        await supabase.from('appeals').delete().eq('id', testAppealId);
-        await supabase.from('transactions').delete().eq('id', testTxId);
-        addLog("   ✅ 测试数据已清理完毕");
+        addLog("ℹ️ 数据已保留在列表中，请手动刷新或点击下方按钮清理。");
 
     } catch (e: any) {
         addLog("-----------------------------------");
@@ -317,6 +321,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
     } finally {
         setIsTestRunning(false);
     }
+  };
+
+  const handleCleanTest = async () => {
+      if (!testCreatedIds) return;
+      setLoading(true);
+      try {
+          await supabase.from('users').delete().eq('id', testCreatedIds.userId);
+          await supabase.from('appeals').delete().eq('id', testCreatedIds.appealId);
+          await supabase.from('transactions').delete().eq('id', testCreatedIds.txId);
+          showToast('测试数据已清理', 'success');
+          setTestCreatedIds(null);
+          loadData();
+      } catch (e) {
+          showToast('清理失败，可能数据已不存在', 'error');
+      } finally {
+          setLoading(false);
+      }
   };
 
   const forceClearCache = async () => {
@@ -963,8 +984,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
               </div>
 
               <div className="mt-4 flex justify-between items-center">
-                 <p className="text-xs text-gray-500">测试数据将在测试完成后自动清理</p>
+                 <p className="text-xs text-gray-500">提示：测试结束后需手动清理数据</p>
                  <div className="flex gap-3">
+                    {testCreatedIds && !isTestRunning && (
+                        <button 
+                            onClick={handleCleanTest}
+                            disabled={loading}
+                            className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg text-xs font-bold transition-colors flex items-center gap-2"
+                        >
+                            <Trash2 size={12}/> {loading ? '清理中...' : '清理本次测试数据'}
+                        </button>
+                    )}
                     <button 
                         onClick={() => {
                             navigator.clipboard.writeText(testLogs.join('\n'));
