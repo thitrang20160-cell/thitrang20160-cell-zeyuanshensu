@@ -1,14 +1,14 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { User, Appeal, Transaction, AppealStatus, TransactionType, TransactionStatus, UserRole, PoaType, POA_TYPE_MAPPING, SystemConfig, KnowledgeBaseItem } from '../types';
-import { getAppeals, saveAppeal, getTransactions, saveTransaction, getUsers, updateAnyUser, getSystemConfig, saveSystemConfig, processDeductionAndCommission, getKnowledgeBase, addToKnowledgeBase, deleteFromKnowledgeBase } from '../services/storageService';
+import { getAppeals, saveAppeal, getTransactions, saveTransaction, getUsers, updateAnyUser, getSystemConfig, saveSystemConfig, processDeductionAndCommission, getKnowledgeBase, addToKnowledgeBase, deleteFromKnowledgeBase, supabase, signOut } from '../services/storageService';
 import { 
   CheckCircle, XCircle, Search, Edit3, DollarSign, 
   Save, X, Loader2, Bell, Download, Users, 
   ShieldAlert, TrendingUp, Sparkles, 
   Key, PieChart, RefreshCw, Zap,
   ListChecks, BookOpen, Trash2, FileSpreadsheet, Plus, Activity,
-  ChevronDown, ChevronUp, BrainCircuit, Settings
+  ChevronDown, ChevronUp, BrainCircuit, Settings, Stethoscope, Database, PlayCircle, Trash
 } from 'lucide-react';
 import { GoogleGenAI } from "@google/genai";
 import { useToast } from '../components/Toast';
@@ -39,7 +39,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
   const isMarketing = currentUser.role === UserRole.MARKETING;
 
   // State
-  // FIX: Initialize activeTab based on role immediately
   const [activeTab, setActiveTab] = useState<string>(() => {
     if (isMarketing) return 'marketing_performance';
     if (isFinance) return 'finance_review';
@@ -76,8 +75,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [editUserForm, setEditUserForm] = useState<Partial<User>>({});
 
-  // KB State (Accordion)
+  // KB State
   const [kbExpandedId, setKbExpandedId] = useState<string | null>(null);
+
+  // Diagnosis State
+  const [diagnosis, setDiagnosis] = useState<{db: boolean | null, ai: boolean | null, auth: boolean | null}>({ db: null, ai: null, auth: null });
+  const [isDiagnosing, setIsDiagnosing] = useState(false);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -102,7 +105,80 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
     loadData();
   }, [loadData]);
 
-  // --- Excel Parsing (Multi-sheet Support) ---
+  // --- Diagnosis Functions ---
+  const runSystemDiagnosis = async () => {
+    setIsDiagnosing(true);
+    const results = { db: false, ai: false, auth: false };
+    
+    // 1. Check DB
+    try {
+      const { error } = await supabase.from('users').select('id').limit(1);
+      results.db = !error;
+    } catch (e) { results.db = false; }
+
+    // 2. Check Auth Session
+    try {
+      const { data } = await supabase.auth.getSession();
+      results.auth = !!data.session;
+    } catch (e) { results.auth = false; }
+
+    // 3. Check AI Key
+    try {
+      if (window.aistudio) {
+        results.ai = await window.aistudio.hasSelectedApiKey();
+      } else {
+        results.ai = false;
+      }
+    } catch (e) { results.ai = false; }
+
+    setDiagnosis(results);
+    setIsDiagnosing(false);
+    
+    if (results.db && results.ai) {
+        showToast('系统运行状况良好', 'success');
+    } else {
+        showToast('发现系统异常，请检查红色项', 'error');
+    }
+  };
+
+  const generateTestData = async () => {
+    setLoading(true);
+    try {
+        const testId = `TEST-${Date.now()}`;
+        // Create Mock Appeal
+        await saveAppeal({
+            id: `appeal-${Date.now()}`,
+            userId: currentUser.id,
+            username: '测试自动生成',
+            accountType: '测试环境',
+            loginInfo: '192.168.1.1 / user / pass',
+            emailAccount: `test_${Date.now()}@example.com`,
+            emailPass: 'password',
+            status: AppealStatus.PENDING,
+            adminNotes: '这是自动生成的测试数据，用于验证列表渲染',
+            deductionAmount: 0,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+        });
+        showToast('测试数据已生成，请查看工单列表', 'success');
+        loadData();
+    } catch (e) {
+        showToast('生成失败', 'error');
+    } finally {
+        setLoading(false);
+    }
+  };
+
+  const forceClearCache = async () => {
+      try {
+          await signOut();
+      } catch(e) {}
+      localStorage.clear();
+      sessionStorage.clear();
+      window.location.href = '/';
+  };
+
+  // --- Excel Parsing ---
   const handleExcelUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -116,7 +192,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
         wb.SheetNames.forEach(sheetName => {
            const ws = wb.Sheets[sheetName];
            const csv = XLSX.utils.sheet_to_csv(ws);
-           if (csv && csv.length > 5) { // Only append if content exists
+           if (csv && csv.length > 5) { 
              combinedData += `\n--- Sheet: ${sheetName} ---\n${csv}`;
            }
         });
@@ -141,7 +217,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
       return;
     }
 
-    // FIX: Check Key BEFORE initializing AI to prevent "Unexpected error"
     if (window.aistudio) {
         try {
             const hasKey = await window.aistudio.hasSelectedApiKey();
@@ -204,7 +279,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
     let finalStatus = editStatus;
     let finalDeduction = editDeduction;
 
-    // Staff Logic: Staff marks as "Success" -> Becomes PASSED_PENDING_DEDUCTION
     if (isStaff && (editStatus === AppealStatus.PASSED || editStatus === AppealStatus.PASSED_PENDING_DEDUCTION)) {
       finalStatus = AppealStatus.PASSED_PENDING_DEDUCTION;
     }
@@ -219,13 +293,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
 
     await saveAppeal(updatedAppeal);
     
-    // Transaction Logic
-    // Only Boss/Finance can finalize deduction
     const isBossOrFinance = isSuper || isFinance;
     
     if (isBossOrFinance && (finalStatus === AppealStatus.PASSED) && finalDeduction > 0) {
        const txId = `deduct-${Date.now()}`;
-       // Create Pending Transaction
        await saveTransaction({ 
          id: txId, 
          userId: editingAppeal.userId, 
@@ -238,7 +309,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
          createdAt: new Date().toISOString() 
        });
        
-       // Process immediately
        const result = await processDeductionAndCommission(txId);
        if (result.success) {
          showToast('工单已完结并成功扣费', 'success');
@@ -488,9 +558,66 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
             </div>
           )}
 
-          {/* TAB 6: 系统配置 - Full Controls */}
+          {/* TAB 6: 系统配置 - With Developer Tools */}
           {activeTab === 'system_config' && isSuper && (
              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 animate-in fade-in">
+                {/* Developer Diagnostic Tool */}
+                <div className="col-span-1 md:col-span-2 bg-gradient-to-r from-gray-800 to-gray-900 rounded-2xl p-6 text-white shadow-xl">
+                    <h4 className="font-bold flex items-center gap-2 mb-4"><Stethoscope className="text-green-400"/> 开发者诊断中心</h4>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                        <button 
+                            onClick={runSystemDiagnosis}
+                            disabled={isDiagnosing}
+                            className="bg-white/10 hover:bg-white/20 p-4 rounded-xl text-left transition-colors relative overflow-hidden"
+                        >
+                            <Activity className="mb-2 text-blue-400"/>
+                            <p className="text-xs text-gray-400">一键体检</p>
+                            <p className="font-bold">系统自检</p>
+                            {isDiagnosing && <Loader2 className="absolute top-4 right-4 animate-spin text-gray-500"/>}
+                        </button>
+
+                        <button 
+                            onClick={generateTestData}
+                            className="bg-white/10 hover:bg-white/20 p-4 rounded-xl text-left transition-colors"
+                        >
+                            <PlayCircle className="mb-2 text-orange-400"/>
+                            <p className="text-xs text-gray-400">列表为空时使用</p>
+                            <p className="font-bold">生成测试数据</p>
+                        </button>
+                        
+                        <div className="bg-white/5 p-4 rounded-xl text-left border border-white/10">
+                            <Database className="mb-2 text-purple-400"/>
+                            <div className="flex justify-between items-center">
+                                <div>
+                                    <p className="text-xs text-gray-400">数据库</p>
+                                    <p className="font-bold text-sm">{diagnosis.db === true ? '正常' : diagnosis.db === false ? '连接失败' : '未检测'}</p>
+                                </div>
+                                {diagnosis.db === true && <CheckCircle size={16} className="text-green-400"/>}
+                                {diagnosis.db === false && <XCircle size={16} className="text-red-400"/>}
+                            </div>
+                        </div>
+
+                         <div className="bg-white/5 p-4 rounded-xl text-left border border-white/10">
+                            <Sparkles className="mb-2 text-indigo-400"/>
+                            <div className="flex justify-between items-center">
+                                <div>
+                                    <p className="text-xs text-gray-400">AI 服务</p>
+                                    <p className="font-bold text-sm">{diagnosis.ai === true ? '已授权' : diagnosis.ai === false ? '未授权' : '未检测'}</p>
+                                </div>
+                                {diagnosis.ai === true && <CheckCircle size={16} className="text-green-400"/>}
+                                {diagnosis.ai === false && <XCircle size={16} className="text-red-400"/>}
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div className="mt-4 pt-4 border-t border-white/10 flex justify-between items-center">
+                        <p className="text-xs text-gray-500">遇到白屏或卡死？尝试强制重置。</p>
+                        <button onClick={forceClearCache} className="px-4 py-2 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-lg text-xs font-bold flex items-center gap-2">
+                            <Trash size={14}/> 强制清理缓存并重启
+                        </button>
+                    </div>
+                </div>
+
                 <div className="p-6 bg-white border rounded-2xl space-y-4">
                    <h4 className="font-bold flex items-center gap-2 text-gray-800"><Settings className="text-indigo-600"/> 客户端 UI 数据修饰</h4>
                    
@@ -518,11 +645,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
                    <button onClick={() => config && saveSystemConfig(config).then(() => showToast('配置已保存', 'success'))} className="w-full py-2 bg-indigo-600 text-white rounded-lg font-bold text-sm shadow hover:bg-indigo-700 transition-colors">更新前台配置</button>
                 </div>
                 
-                <div className="p-6 bg-gray-900 text-white rounded-2xl space-y-4 relative overflow-hidden">
-                   <Key className="absolute right-[-10px] top-[-10px] opacity-10" size={100} />
-                   <h4 className="font-bold flex items-center gap-2"><RefreshCw/> API 连接设置</h4>
-                   <p className="text-xs text-gray-400">系统使用 Gemini 3 Flash 模型。如果生成失败，请重新授权。</p>
-                   <button onClick={handleOpenKey} className="w-full py-3 bg-white/10 hover:bg-white/20 text-white rounded-lg font-bold text-sm flex items-center justify-center gap-2 transition-colors">
+                <div className="p-6 bg-white border rounded-2xl space-y-4 relative overflow-hidden">
+                   <Key className="absolute right-[-10px] top-[-10px] opacity-10 text-gray-900" size={100} />
+                   <h4 className="font-bold flex items-center gap-2 text-gray-800"><RefreshCw className="text-indigo-600"/> API 连接设置</h4>
+                   <p className="text-xs text-gray-500">如果 AI 生成失败，请重新授权 Gemini API。</p>
+                   <button onClick={handleOpenKey} className="w-full py-3 bg-gray-900 hover:bg-black text-white rounded-lg font-bold text-sm flex items-center justify-center gap-2 transition-colors shadow-lg">
                      打开密钥授权窗口
                    </button>
                 </div>
