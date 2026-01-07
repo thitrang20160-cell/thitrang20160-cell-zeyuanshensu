@@ -1,14 +1,14 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { User, Appeal, Transaction, AppealStatus, TransactionType, TransactionStatus, UserRole, PoaType, POA_TYPE_MAPPING, SystemConfig, KnowledgeBaseItem } from '../types';
-import { getAppeals, saveAppeal, getTransactions, saveTransaction, getUsers, updateAnyUser, getSystemConfig, saveSystemConfig, processDeductionAndCommission, getKnowledgeBase, addToKnowledgeBase, deleteFromKnowledgeBase, incrementKbUsage } from '../services/storageService';
+import { getAppeals, saveAppeal, getTransactions, saveTransaction, getUsers, updateAnyUser, getSystemConfig, saveSystemConfig, processDeductionAndCommission, getKnowledgeBase, addToKnowledgeBase, deleteFromKnowledgeBase } from '../services/storageService';
 import { 
   CheckCircle, XCircle, Search, Edit3, DollarSign, 
   Save, X, Loader2, Bell, Download, Users, 
   ShieldAlert, TrendingUp, Sparkles, 
   Key, PieChart, RefreshCw, Zap,
-  ListChecks, BookOpen, Trash2, FileSpreadsheet, Plus, Activity, Bot,
-  ChevronDown, ChevronUp, BrainCircuit, Settings, Phone
+  ListChecks, BookOpen, Trash2, FileSpreadsheet, Plus, Activity,
+  ChevronDown, ChevronUp, BrainCircuit, Settings
 } from 'lucide-react';
 import { GoogleGenAI } from "@google/genai";
 import { useToast } from '../components/Toast';
@@ -39,7 +39,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
   const isMarketing = currentUser.role === UserRole.MARKETING;
 
   // State
-  // FIX: Initialize activeTab based on role immediately to prevent white screen
+  // FIX: Initialize activeTab based on role immediately
   const [activeTab, setActiveTab] = useState<string>(() => {
     if (isMarketing) return 'marketing_performance';
     if (isFinance) return 'finance_review';
@@ -141,8 +141,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
       return;
     }
 
-    // Attempt to open key selector if needed (Check for window.aistudio support)
-    // IMPORTANT: Race condition handling is built into the library, but we trigger open here.
+    // FIX: Check Key BEFORE initializing AI to prevent "Unexpected error"
     if (window.aistudio) {
         try {
             const hasKey = await window.aistudio.hasSelectedApiKey();
@@ -154,7 +153,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
 
     setIsGenerating(true);
     try {
-      // Initialize right before call to get latest key
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const staff = getRandomNames();
       
@@ -207,7 +205,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
     let finalDeduction = editDeduction;
 
     // Staff Logic: Staff marks as "Success" -> Becomes PASSED_PENDING_DEDUCTION
-    // Staff cannot finalize the deduction amount directly in terms of processing money
     if (isStaff && (editStatus === AppealStatus.PASSED || editStatus === AppealStatus.PASSED_PENDING_DEDUCTION)) {
       finalStatus = AppealStatus.PASSED_PENDING_DEDUCTION;
     }

@@ -14,6 +14,7 @@ const App: React.FC = () => {
   const [initLoading, setInitLoading] = useState(true);
 
   useEffect(() => {
+    // 1. Initial Load
     const initAuth = async () => {
       try {
         const user = await getCurrentUserProfile();
@@ -26,12 +27,15 @@ const App: React.FC = () => {
     };
     initAuth();
 
+    // 2. Auth State Listener
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (event === 'SIGNED_IN' && session) {
         const user = await getCurrentUserProfile();
         setCurrentUser(user);
+        setInitLoading(false);
       } else if (event === 'SIGNED_OUT') {
         setCurrentUser(null);
+        setInitLoading(false);
       }
     });
 
@@ -42,13 +46,13 @@ const App: React.FC = () => {
 
   const handleLogout = async () => {
     try {
-      await signOut(); // This now also clears local storage in service
-      setCurrentUser(null);
-      // Force hard redirect to clear browser state completely
-      window.location.href = '/'; 
+      await signOut(); // This clears Supabase session AND LocalStorage
     } catch (err) {
       console.error("Logout failed", err);
-      window.location.reload();
+    } finally {
+      // CRITICAL FIX: Force a hard browser redirect to clear all React state and memory
+      // This prevents the "White Screen" hang by resetting the app completely.
+      window.location.href = '/'; 
     }
   };
 
@@ -61,13 +65,13 @@ const App: React.FC = () => {
 
   if (initLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50 text-brand-600">
-        <Loader2 className="animate-spin w-10 h-10" />
+      <div className="min-h-screen flex items-center justify-center bg-gray-50 text-indigo-600">
+        <Loader2 className="animate-spin w-12 h-12" />
       </div>
     );
   }
 
-  // 只要不是普通 CLIENT 客户，都进入 AdminDashboard，由 AdminDashboard 内部进行权限分流
+  // Routing Logic: Non-Client roles go to AdminDashboard
   const isManagementRole = currentUser && currentUser.role !== UserRole.CLIENT;
 
   return (
