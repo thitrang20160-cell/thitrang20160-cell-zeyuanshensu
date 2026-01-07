@@ -53,6 +53,7 @@ export interface Appeal {
   statusDetail?: string;
   adminNotes: string;
   deductionAmount: number;
+  generatedPoa?: string; // 新增：存储AI生成的POA内容
   createdAt: string;
   updatedAt: string;
 }
@@ -76,6 +77,10 @@ export interface SystemConfig {
   marketingBaseCases?: number;
   marketingSuccessRate?: string;
   marketingBaseProcessing?: number;
+  aiStats?: { // 新增：AI 统计数据
+    totalPoa: number;
+    apiCalls: number;
+  };
 }
 
 export enum PoaType {

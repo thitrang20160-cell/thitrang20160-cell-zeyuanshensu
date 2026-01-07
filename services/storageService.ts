@@ -52,7 +52,7 @@ export const signIn = async (email: string, pass: string): Promise<{ user: User 
   try {
       // 1. Auth Login (Usually fast)
       const { data: authData, error: authError } = await withTimeout(
-          supabase.auth.signInWithPassword({ email, password: pass }),
+          supabase.auth.signInWithPassword({ email, password: pass }) as Promise<any>,
           8000,
           "身份验证"
       );
@@ -62,7 +62,7 @@ export const signIn = async (email: string, pass: string): Promise<{ user: User 
       
       // 2. Profile Fetch (Often hangs if DB is slow) - Enforce 5s Timeout
       const { data: profile, error: dbError } = await withTimeout(
-          supabase.from('users').select('*').eq('id', authData.user.id).single(),
+          supabase.from('users').select('*').eq('id', authData.user.id).single() as Promise<any>,
           5000, 
           "获取用户资料"
       );
@@ -98,7 +98,7 @@ export const getCurrentUserProfile = async (): Promise<User | null> => {
 
     // Add explicit timeout to profile fetch on load
     const { data, error } = await withTimeout(
-        supabase.from('users').select('*').eq('id', session.user.id).single(),
+        supabase.from('users').select('*').eq('id', session.user.id).single() as Promise<any>,
         5000,
         "自动登录"
     );

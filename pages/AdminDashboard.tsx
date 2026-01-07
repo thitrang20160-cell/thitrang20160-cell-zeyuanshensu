@@ -66,6 +66,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
   const [isGenerating, setIsGenerating] = useState(false);
   const [aiStep, setAiStep] = useState<1 | 2>(1);
 
+  // KB Upload State
+  const [showKbModal, setShowKbModal] = useState(false);
+  const [newKbItem, setNewKbItem] = useState({ title: '', content: '' });
+
   // Appeal Editing
   const [editStatus, setEditStatus] = useState<AppealStatus>(AppealStatus.PENDING);
   const [editNote, setEditNote] = useState('');
@@ -110,6 +114,24 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  // Open Edit Modal & Populate Data
+  const handleOpenEdit = (appeal: Appeal) => {
+      setEditingAppeal(appeal);
+      setEditStatus(appeal.status);
+      setEditNote(appeal.adminNotes || '');
+      setEditDeduction(appeal.deductionAmount || 0);
+      
+      // Data Persistence: Restore POA if exists
+      if (appeal.generatedPoa) {
+          setAiGeneratedText(appeal.generatedPoa);
+          setAiStep(2); // Jump to View mode
+          setAiStoreName(appeal.username); // Fallback assumption
+      } else {
+          setAiGeneratedText('');
+          setAiStep(1); // Default to Create mode
+      }
+  };
 
   // --- Diagnosis Functions ---
   const runSystemDiagnosis = async () => {
@@ -433,6 +455,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
         setAiGeneratedText(response.text);
         setAiStep(2);
         showToast('AI 智囊团：文书构建完成', 'success');
+
+        // Update Stats Logic
+        if (config) {
+            const newStats = {
+                totalPoa: (config.aiStats?.totalPoa || 1284),
+                apiCalls: (config.aiStats?.apiCalls || 15200) + 1
+            };
+            const newConfig = { ...config, aiStats: newStats };
+            setConfig(newConfig);
+            saveSystemConfig(newConfig); // Silent save
+        }
       }
     } catch (err: any) {
       console.error(err);
@@ -442,7 +475,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
     }
   };
 
-  // --- Workflow Handling (FIXED: Try/Catch/Finally to prevent infinite loading) ---
+  // --- Workflow Handling (FIXED: Persistence of POA) ---
   const handleSaveAppealTask = async () => {
     if (!editingAppeal) return;
     setLoading(true);
@@ -455,16 +488,29 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
           finalStatus = AppealStatus.PASSED_PENDING_DEDUCTION;
         }
 
-        const updatedAppeal = { 
+        const updatedAppeal: Appeal = { 
           ...editingAppeal, 
           status: finalStatus, 
           adminNotes: editNote, 
           deductionAmount: finalDeduction, 
+          // PERSISTENCE: Save the generated POA text if available
+          generatedPoa: aiGeneratedText || editingAppeal.generatedPoa,
           updatedAt: new Date().toISOString() 
         };
 
         await saveAppeal(updatedAppeal);
         
+        // Update Stats: Increment Total POA count if this is a new generation
+        if (aiGeneratedText && config) {
+             const newStats = {
+                totalPoa: (config.aiStats?.totalPoa || 1284) + 1,
+                apiCalls: (config.aiStats?.apiCalls || 15200)
+            };
+            const newConfig = { ...config, aiStats: newStats };
+            setConfig(newConfig);
+            saveSystemConfig(newConfig);
+        }
+
         const isBossOrFinance = isSuper || isFinance;
         
         if (isBossOrFinance && (finalStatus === AppealStatus.PASSED) && finalDeduction > 0) {
@@ -477,7 +523,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
              amount: finalDeduction, 
              status: TransactionStatus.PENDING, 
              appealId: editingAppeal.id, 
-             note: `工单服务费 [Ref:${editingAppeal.id}]`, // Robust link
+             note: `工单服务费 [Ref:${editingAppeal.id}]`, 
              createdAt: new Date().toISOString() 
            });
            
@@ -489,7 +535,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
            }
         } else if (isStaff && finalStatus === AppealStatus.PASSED_PENDING_DEDUCTION) {
            showToast('已标记为成功，提交给财务/老板核算扣费', 'info');
-    } else {
+        } else {
            showToast('工单状态已更新', 'success');
         }
         
@@ -499,7 +545,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
         console.error("Save failed", err);
         showToast('保存失败: ' + (err.message || '未知错误'), 'error');
     } finally {
-        setLoading(false); // Ensure loader stops
+        setLoading(false);
     }
   };
 
@@ -514,6 +560,33 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
     } else {
       showToast('更新失败', 'error');
     }
+  };
+
+  const handleAddKbItem = async () => {
+      if (!newKbItem.title || !newKbItem.content) {
+          showToast('请填写标题和内容', 'error');
+          return;
+      }
+      setLoading(true);
+      try {
+          await addToKnowledgeBase({
+              id: `kb-${Date.now()}`,
+              type: PoaType.ACCOUNT_SUSPENSION, // Default for now
+              subType: 'General',
+              title: newKbItem.title,
+              content: newKbItem.content,
+              createdAt: new Date().toISOString(),
+              usageCount: 0
+          });
+          showToast('策略已添加', 'success');
+          setNewKbItem({ title: '', content: '' });
+          setShowKbModal(false);
+          loadData();
+      } catch (e) {
+          showToast('添加失败', 'error');
+      } finally {
+          setLoading(false);
+      }
   };
 
   const handleOpenKey = async () => {
@@ -570,7 +643,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
                                 </span>
                               </td>
                               <td className="p-4 text-right">
-                                 <button onClick={() => { setEditingAppeal(a); setEditStatus(a.status); setEditNote(a.adminNotes); setEditDeduction(a.deductionAmount || 0); }} className="px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-bold hover:shadow-lg transition-all">处理</button>
+                                 <button onClick={() => handleOpenEdit(a)} className="px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-bold hover:shadow-lg transition-all">处理</button>
                               </td>
                            </tr>
                         ))}
@@ -638,21 +711,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
           {/* TAB 3: AI 智囊团 (Boss Only) - Restored Features (Stats & Accordion) */}
           {activeTab === 'knowledge_base' && isSuper && (
             <div className="space-y-6 animate-in fade-in">
-               {/* Stats Header */}
+               {/* Stats Header (Dynamic) */}
                <div className="grid grid-cols-2 gap-4">
                   <div className="bg-indigo-600 text-white p-4 rounded-xl shadow-lg">
                     <p className="text-xs opacity-70 uppercase font-bold">累计生成 POA</p>
-                    <p className="text-3xl font-black">1,284</p>
+                    <p className="text-3xl font-black">{(config?.aiStats?.totalPoa || 1284).toLocaleString()}</p>
                   </div>
                   <div className="bg-white border p-4 rounded-xl shadow-sm">
                     <p className="text-xs text-gray-500 uppercase font-bold">AI 调用次数</p>
-                    <p className="text-3xl font-black text-gray-800">15.2k</p>
+                    <p className="text-3xl font-black text-gray-800">{(config?.aiStats?.apiCalls || 15200).toLocaleString()}</p>
                   </div>
                </div>
 
                <div className="flex justify-between items-center">
                   <h3 className="font-bold text-gray-800 flex items-center gap-2"><BrainCircuit className="text-indigo-600"/> 智囊团策略库</h3>
-                  <button className="flex items-center gap-2 bg-indigo-50 text-indigo-600 px-3 py-2 rounded-lg text-xs font-bold"><Plus size={14}/> 上传新策略</button>
+                  <button onClick={() => setShowKbModal(true)} className="flex items-center gap-2 bg-indigo-50 text-indigo-600 px-3 py-2 rounded-lg text-xs font-bold hover:bg-indigo-100 transition-colors"><Plus size={14}/> 上传新策略</button>
                </div>
                
                <div className="space-y-3">
@@ -1010,6 +1083,34 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
                         </button>
                     )}
                  </div>
+              </div>
+           </div>
+        </div>
+      )}
+
+      {/* MODAL: Add Knowledge Base Item */}
+      {showKbModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm animate-in fade-in">
+           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6">
+              <div className="flex justify-between items-center mb-4">
+                 <h3 className="text-xl font-bold flex items-center gap-2">上传新策略</h3>
+                 <button onClick={() => setShowKbModal(false)} className="text-gray-400 hover:text-gray-600"><X size={20}/></button>
+              </div>
+              <div className="space-y-4">
+                 <div>
+                    <label className="block text-xs font-bold text-gray-500 mb-1">策略标题</label>
+                    <input type="text" value={newKbItem.title} onChange={e => setNewKbItem({...newKbItem, title: e.target.value})} className="w-full border p-2 rounded-lg" placeholder="e.g. 2024最新物流VTR申诉模板" />
+                 </div>
+                 <div>
+                    <label className="block text-xs font-bold text-gray-500 mb-1">核心内容/Prompt</label>
+                    <textarea value={newKbItem.content} onChange={e => setNewKbItem({...newKbItem, content: e.target.value})} rows={6} className="w-full border p-2 rounded-lg" placeholder="输入核心策略或Prompt..." />
+                 </div>
+              </div>
+              <div className="flex justify-end gap-3 mt-6">
+                 <button onClick={() => setShowKbModal(false)} className="px-4 py-2 text-gray-500 font-bold">取消</button>
+                 <button onClick={handleAddKbItem} disabled={loading} className="px-6 py-2 bg-indigo-600 text-white rounded-lg font-bold shadow-lg">
+                    {loading ? <Loader2 className="animate-spin"/> : '确认上传'}
+                 </button>
               </div>
            </div>
         </div>
