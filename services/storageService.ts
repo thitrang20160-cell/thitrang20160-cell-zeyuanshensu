@@ -42,10 +42,29 @@ export const signOut = async () => {
 };
 
 export const getCurrentUserProfile = async (): Promise<User | null> => {
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session?.user) return null;
-  const { data } = await supabase.from('users').select('*').eq('id', session.user.id).single();
-  return data as User | null;
+  try {
+    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    
+    if (sessionError || !session?.user) {
+        return null;
+    }
+
+    const { data, error } = await supabase.from('users').select('*').eq('id', session.user.id).single();
+    
+    // Ghost Session Detection:
+    // If we have a session but NO user profile in the DB, the state is corrupted.
+    // We must clear it to prevent infinite loops.
+    if (error || !data) {
+        console.warn("Ghost session detected (Auth valid but DB profile missing). Clearing...");
+        await signOut(); 
+        return null;
+    }
+
+    return data as User;
+  } catch (e) {
+    console.error("Profile fetch error", e);
+    return null;
+  }
 };
 
 // --- 财务核心逻辑：扣费与佣金结算联动 ---
