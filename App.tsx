@@ -44,8 +44,8 @@ const App: React.FC = () => {
     try {
       await signOut();
       setCurrentUser(null);
-      // 强制刷新，防止 React 状态残留导致二次登录异常
-      window.location.href = "/"; 
+      // 使用 replace 彻底替换历史记录并刷新，清除所有内存状态
+      window.location.replace('/');
     } catch (err) {
       console.error("Logout failed", err);
       window.location.reload();
