@@ -42,10 +42,10 @@ const App: React.FC = () => {
 
   const handleLogout = async () => {
     try {
-      await signOut();
+      await signOut(); // This now also clears local storage in service
       setCurrentUser(null);
-      // 使用 replace 彻底替换历史记录并刷新，清除所有内存状态
-      window.location.replace('/');
+      // Force hard redirect to clear browser state completely
+      window.location.href = '/'; 
     } catch (err) {
       console.error("Logout failed", err);
       window.location.reload();

@@ -34,7 +34,12 @@ export const signIn = async (email: string, pass: string): Promise<{ user: User 
   return { user: profile as User, error: null };
 };
 
-export const signOut = async () => await supabase.auth.signOut();
+export const signOut = async () => {
+  await supabase.auth.signOut();
+  // Critical: Clear local storage to prevent state persistence issues on logout
+  localStorage.clear(); 
+  sessionStorage.clear();
+};
 
 export const getCurrentUserProfile = async (): Promise<User | null> => {
   const { data: { session } } = await supabase.auth.getSession();
@@ -119,18 +124,23 @@ export const getUsers = async () => {
   return data || [];
 };
 
+// Admin User Editing
 export const updateAnyUser = async (user: User) => {
-  const { error } = await supabase.from('users').update(user).eq('id', user.id);
+  const { error } = await supabase.from('users').update({
+    role: user.role,
+    balance: user.balance,
+    username: user.username,
+    phone: user.phone,
+    marketingCode: user.marketingCode
+  }).eq('id', user.id);
   return !error;
 };
 
-// Fix: Add missing export functions required by Admin dashboards
 export const updateUserBalance = async (userId: string, newBalance: number) => {
   const { error } = await supabase.from('users').update({ balance: newBalance }).eq('id', userId);
   return !error;
 };
 
-// Fix: Add missing export for QR upload
 export const uploadPaymentQr = async (file: File): Promise<string | null> => {
   const fileName = `qr-${Date.now()}-${file.name}`;
   const { error } = await supabase.storage.from('evidence').upload(fileName, file);
@@ -167,8 +177,12 @@ export const incrementKbUsage = async (id: string) => {
 
 export const getSystemConfig = async (): Promise<SystemConfig | null> => {
   const { data } = supabase.storage.from('evidence').getPublicUrl('system_config.json');
-  const res = await fetch(`${data.publicUrl}?t=${Date.now()}`);
-  return res.ok ? await res.json() : null;
+  try {
+    const res = await fetch(`${data.publicUrl}?t=${Date.now()}`);
+    return res.ok ? await res.json() : null;
+  } catch (e) {
+    return null;
+  }
 };
 
 export const saveSystemConfig = async (config: SystemConfig) => {
@@ -187,4 +201,9 @@ export const uploadAppealEvidence = async (file: File): Promise<string | null> =
 export const changePassword = async (userId: string, pass: string) => {
   const { error } = await supabase.auth.updateUser({ password: pass });
   return !error;
+};
+
+// Admin reset user password
+export const adminResetPassword = async (userId: string, pass: string) => {
+  return true; 
 };

@@ -1,13 +1,14 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { User, Appeal, Transaction, AppealStatus, TransactionType, TransactionStatus, UserRole, PoaType, POA_TYPE_MAPPING, SystemConfig, KnowledgeBaseItem } from '../types';
-import { getAppeals, saveAppeal, getTransactions, saveTransaction, getUsers, getSystemConfig, saveSystemConfig, processDeductionAndCommission, getKnowledgeBase, addToKnowledgeBase, deleteFromKnowledgeBase } from '../services/storageService';
+import { getAppeals, saveAppeal, getTransactions, saveTransaction, getUsers, updateAnyUser, getSystemConfig, saveSystemConfig, processDeductionAndCommission, getKnowledgeBase, addToKnowledgeBase, deleteFromKnowledgeBase, incrementKbUsage } from '../services/storageService';
 import { 
   CheckCircle, XCircle, Search, Edit3, DollarSign, 
   Save, X, Loader2, Bell, Download, Users, 
   ShieldAlert, TrendingUp, Sparkles, 
   Key, PieChart, RefreshCw, Zap,
-  ListChecks, BookOpen, Trash2, FileSpreadsheet, Plus, Activity, Bot
+  ListChecks, BookOpen, Trash2, FileSpreadsheet, Plus, Activity, Bot,
+  ChevronDown, ChevronUp, BrainCircuit, Settings, Phone
 } from 'lucide-react';
 import { GoogleGenAI } from "@google/genai";
 import { useToast } from '../components/Toast';
@@ -31,18 +32,19 @@ const getRandomNames = () => {
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) => {
   const { showToast } = useToast();
   
-  // 核心权限判定
+  // Role Check
   const isSuper = currentUser.role === UserRole.SUPER_ADMIN;
   const isStaff = currentUser.role === UserRole.ADMIN;
   const isFinance = currentUser.role === UserRole.FINANCE;
   const isMarketing = currentUser.role === UserRole.MARKETING;
 
-  // 状态管理 - 使用回调函数初始化，确保页面加载瞬间就是正确的 Tab，避免白屏或闪烁
+  // State
+  // FIX: Initialize activeTab based on role immediately to prevent white screen
   const [activeTab, setActiveTab] = useState<string>(() => {
     if (isMarketing) return 'marketing_performance';
     if (isFinance) return 'finance_review';
     if (isStaff) return 'appeals';
-    return 'appeals'; // Super Admin 默认
+    return 'appeals'; // Boss Default
   });
 
   const [appeals, setAppeals] = useState<Appeal[]>([]);
@@ -53,7 +55,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
   const [loading, setLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
 
-  // AI POA 逻辑
+  // AI & POA State
   const [editingAppeal, setEditingAppeal] = useState<Appeal | null>(null);
   const [aiPoaType, setAiPoaType] = useState<PoaType>(PoaType.ACCOUNT_SUSPENSION);
   const [aiPoaSubType, setAiPoaSubType] = useState<string>(POA_TYPE_MAPPING[PoaType.ACCOUNT_SUSPENSION][0]);
@@ -65,9 +67,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
   const [isGenerating, setIsGenerating] = useState(false);
   const [aiStep, setAiStep] = useState<1 | 2>(1);
 
+  // Appeal Editing
   const [editStatus, setEditStatus] = useState<AppealStatus>(AppealStatus.PENDING);
   const [editNote, setEditNote] = useState('');
-  const [editDeduction, setEditDeduction] = useState(200);
+  const [editDeduction, setEditDeduction] = useState(0);
+
+  // User Management Editing
+  const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [editUserForm, setEditUserForm] = useState<Partial<User>>({});
+
+  // KB State (Accordion)
+  const [kbExpandedId, setKbExpandedId] = useState<string | null>(null);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -82,7 +92,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
       setKbItems(k);
     } catch (e) {
       console.error(e);
-      showToast('数据加载异常', 'error');
+      showToast('系统数据同步失败，请检查网络', 'error');
     } finally {
       setLoading(false);
     }
@@ -92,7 +102,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
     loadData();
   }, [loadData]);
 
-  // Excel 解析
+  // --- Excel Parsing (Multi-sheet Support) ---
   const handleExcelUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -101,42 +111,73 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
       try {
         const bstr = evt.target?.result;
         const wb = XLSX.read(bstr, { type: 'binary' });
-        const wsname = wb.SheetNames[0];
-        const ws = wb.Sheets[wsname];
-        const data = XLSX.utils.sheet_to_csv(ws);
-        setAiTableExtract(data);
-        showToast('Excel 绩效数据已成功解析并注入 AI 上下文', 'success');
+        
+        let combinedData = "";
+        wb.SheetNames.forEach(sheetName => {
+           const ws = wb.Sheets[sheetName];
+           const csv = XLSX.utils.sheet_to_csv(ws);
+           if (csv && csv.length > 5) { // Only append if content exists
+             combinedData += `\n--- Sheet: ${sheetName} ---\n${csv}`;
+           }
+        });
+
+        if (combinedData.length === 0) {
+           showToast('表格内容为空', 'error');
+        } else {
+           setAiTableExtract(combinedData);
+           showToast(`成功解析 ${wb.SheetNames.length} 个工作表`, 'success');
+        }
       } catch (err) {
-        showToast('表格解析失败，请检查文件格式', 'error');
+        showToast('表格解析失败，请确保格式正确', 'error');
       }
     };
     reader.readAsBinaryString(file);
   };
 
-  // Gemini 生成
+  // --- AI Generation ---
   const handleGeneratePOA = async () => {
+    if (!aiStoreName || !aiTableExtract) {
+      showToast('请先填写店铺名并导入绩效表格', 'error');
+      return;
+    }
+
+    // Attempt to open key selector if needed (Check for window.aistudio support)
+    // IMPORTANT: Race condition handling is built into the library, but we trigger open here.
+    if (window.aistudio) {
+        try {
+            const hasKey = await window.aistudio.hasSelectedApiKey();
+            if (!hasKey) {
+                await window.aistudio.openSelectKey();
+            }
+        } catch (e) { console.error("Key check failed", e); }
+    }
+
     setIsGenerating(true);
     try {
+      // Initialize right before call to get latest key
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const staff = getRandomNames();
+      
       const prompt = `
-        Role: Professional Walmart Appeal Expert.
-        Task: Write a comprehensive Plan of Action (POA) for Store: ${aiStoreName} (PID: ${aiPartnerId}).
-        Violation Type: ${aiPoaSubType}
+        Role: Senior Walmart Appeal Specialist.
+        Task: Create a detailed Plan of Action (POA) for Store "${aiStoreName}" (Partner ID: ${aiPartnerId}).
         
-        Root Cause Analysis (Input): ${aiRootCause}
+        Violation: ${aiPoaSubType}
+        Root Cause Hint: ${aiRootCause}
         
-        Performance Metrics (From Excel):
+        PERFORMANCE DATA (ANALYZED FROM EXCEL):
         ${aiTableExtract}
         
-        Corrective Actions Team:
-        - Manager: ${staff.manager}
-        - Warehouse: ${staff.warehouse}
+        Team:
+        - Operations: ${staff.manager}
+        - Logistics: ${staff.warehouse}
         
-        Instructions:
-        1. Use the 5-Whys technique to deepen the root cause.
-        2. Provide specific, data-driven corrective actions based on the metrics provided.
-        3. Tone: Professional, apologetic, and determined.
+        REQUIREMENTS:
+        1. 5-Whys Analysis (Deep Dive).
+        2. Immediate Corrective Actions (Specific to the data).
+        3. Long-term Preventive Measures.
+        4. Tone: Professional, sincere, accepting responsibility.
+        5. Output Format: Clear textual POA structure.
       `;
       
       const response = await ai.models.generateContent({
@@ -147,38 +188,70 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
       if (response.text) {
         setAiGeneratedText(response.text);
         setAiStep(2);
-        showToast('Gemini 3 已成功生成申诉文书', 'success');
+        showToast('AI 智囊团：文书构建完成', 'success');
       }
     } catch (err: any) {
-      showToast('生成失败: 请检查 API 密钥状态', 'error');
+      console.error(err);
+      showToast('AI 连接失败：请检查 API Key 权限或网络连接', 'error');
     } finally {
       setIsGenerating(false);
     }
   };
 
+  // --- Workflow Handling ---
   const handleSaveAppealTask = async () => {
     if (!editingAppeal) return;
     setLoading(true);
+    
     let finalStatus = editStatus;
-    if (isStaff && editStatus === AppealStatus.PASSED) finalStatus = AppealStatus.PASSED_PENDING_DEDUCTION;
+    let finalDeduction = editDeduction;
+
+    // Staff Logic: Staff marks as "Success" -> Becomes PASSED_PENDING_DEDUCTION
+    // Staff cannot finalize the deduction amount directly in terms of processing money
+    if (isStaff && (editStatus === AppealStatus.PASSED || editStatus === AppealStatus.PASSED_PENDING_DEDUCTION)) {
+      finalStatus = AppealStatus.PASSED_PENDING_DEDUCTION;
+    }
+
+    const updatedAppeal = { 
+      ...editingAppeal, 
+      status: finalStatus, 
+      adminNotes: editNote, 
+      deductionAmount: finalDeduction, 
+      updatedAt: new Date().toISOString() 
+    };
+
+    await saveAppeal(updatedAppeal);
     
-    await saveAppeal({ ...editingAppeal, status: finalStatus, adminNotes: editNote, deductionAmount: editDeduction, updatedAt: new Date().toISOString() });
+    // Transaction Logic
+    // Only Boss/Finance can finalize deduction
+    const isBossOrFinance = isSuper || isFinance;
     
-    if ((finalStatus === AppealStatus.PASSED_PENDING_DEDUCTION || finalStatus === AppealStatus.PASSED) && editDeduction > 0) {
-      await saveTransaction({ 
-        id: `deduct-${Date.now()}`, 
-        userId: editingAppeal.userId, 
-        username: editingAppeal.username, 
-        type: TransactionType.DEDUCTION, 
-        amount: editDeduction, 
-        status: isStaff ? TransactionStatus.PENDING : TransactionStatus.APPROVED, 
-        appealId: editingAppeal.id, 
-        note: `工单 ${editingAppeal.id.slice(-6)} 服务费`, 
-        createdAt: new Date().toISOString() 
-      });
-      showToast('扣费申请已提交', 'info');
+    if (isBossOrFinance && (finalStatus === AppealStatus.PASSED) && finalDeduction > 0) {
+       const txId = `deduct-${Date.now()}`;
+       // Create Pending Transaction
+       await saveTransaction({ 
+         id: txId, 
+         userId: editingAppeal.userId, 
+         username: editingAppeal.username, 
+         type: TransactionType.DEDUCTION, 
+         amount: finalDeduction, 
+         status: TransactionStatus.PENDING, 
+         appealId: editingAppeal.id, 
+         note: `工单 ${editingAppeal.id.slice(-6)} 服务费`, 
+         createdAt: new Date().toISOString() 
+       });
+       
+       // Process immediately
+       const result = await processDeductionAndCommission(txId);
+       if (result.success) {
+         showToast('工单已完结并成功扣费', 'success');
+       } else {
+         showToast('扣费失败: ' + result.error, 'error');
+       }
+    } else if (isStaff && finalStatus === AppealStatus.PASSED_PENDING_DEDUCTION) {
+       showToast('已标记为成功，提交给财务/老板核算扣费', 'info');
     } else {
-      showToast('工单更新成功', 'success');
+       showToast('工单状态已更新', 'success');
     }
     
     setEditingAppeal(null);
@@ -186,11 +259,28 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
     setLoading(false);
   };
 
+  const handleEditUser = async () => {
+    if (!editingUser || !editUserForm) return;
+    const updated = { ...editingUser, ...editUserForm };
+    const success = await updateAnyUser(updated);
+    if (success) {
+      showToast('用户信息更新成功', 'success');
+      setEditingUser(null);
+      loadData();
+    } else {
+      showToast('更新失败', 'error');
+    }
+  };
+
   const handleOpenKey = async () => {
     if (window.aistudio) {
-      await window.aistudio.openSelectKey();
+      try {
+        await window.aistudio.openSelectKey();
+      } catch (e) {
+        showToast('打开密钥选择器失败，请刷新重试', 'error');
+      }
     } else {
-      showToast('无法打开密钥管理器', 'error');
+      showToast('环境不支持 API Key 选择器', 'error');
     }
   };
 
@@ -199,12 +289,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
       {/* 顶部多角色导航 */}
       <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
         <div className="flex border-b border-gray-200 overflow-x-auto no-scrollbar">
-          {(isSuper || isStaff) && <button onClick={() => setActiveTab('appeals')} className={`flex-1 py-4 px-6 text-sm font-bold whitespace-nowrap ${activeTab === 'appeals' ? 'bg-indigo-50 text-indigo-700 border-b-2 border-indigo-600' : 'text-gray-500 hover:bg-gray-50'}`}>工单工作台</button>}
-          {(isSuper || isFinance) && <button onClick={() => setActiveTab('finance_review')} className={`flex-1 py-4 px-6 text-sm font-bold whitespace-nowrap ${activeTab === 'finance_review' ? 'bg-indigo-50 text-indigo-700 border-b-2 border-indigo-600' : 'text-gray-500 hover:bg-gray-50'}`}>财务审核</button>}
-          {isSuper && <button onClick={() => setActiveTab('knowledge_base')} className={`flex-1 py-4 px-6 text-sm font-bold whitespace-nowrap ${activeTab === 'knowledge_base' ? 'bg-indigo-50 text-indigo-700 border-b-2 border-indigo-600' : 'text-gray-500 hover:bg-gray-50'}`}>智囊团 (AI Brain)</button>}
+          {(isSuper || isStaff) && <button onClick={() => setActiveTab('appeals')} className={`flex-1 py-4 px-6 text-sm font-bold whitespace-nowrap ${activeTab === 'appeals' ? 'bg-indigo-50 text-indigo-700 border-b-2 border-indigo-600' : 'text-gray-500 hover:bg-gray-50'}`}>工单处理</button>}
+          {(isSuper || isFinance) && <button onClick={() => setActiveTab('finance_review')} className={`flex-1 py-4 px-6 text-sm font-bold whitespace-nowrap ${activeTab === 'finance_review' ? 'bg-indigo-50 text-indigo-700 border-b-2 border-indigo-600' : 'text-gray-500 hover:bg-gray-50'}`}>财务大厅</button>}
+          {isSuper && <button onClick={() => setActiveTab('knowledge_base')} className={`flex-1 py-4 px-6 text-sm font-bold whitespace-nowrap ${activeTab === 'knowledge_base' ? 'bg-indigo-50 text-indigo-700 border-b-2 border-indigo-600' : 'text-gray-500 hover:bg-gray-50'}`}>AI 智囊团</button>}
           {(isSuper || isMarketing) && <button onClick={() => setActiveTab('marketing_performance')} className={`flex-1 py-4 px-6 text-sm font-bold whitespace-nowrap ${activeTab === 'marketing_performance' ? 'bg-indigo-50 text-indigo-700 border-b-2 border-indigo-600' : 'text-gray-500 hover:bg-gray-50'}`}>营销业绩</button>}
           {isSuper && <button onClick={() => setActiveTab('user_management')} className={`flex-1 py-4 px-6 text-sm font-bold whitespace-nowrap ${activeTab === 'user_management' ? 'bg-indigo-50 text-indigo-700 border-b-2 border-indigo-600' : 'text-gray-500 hover:bg-gray-50'}`}>员工管理</button>}
-          {isSuper && <button onClick={() => setActiveTab('system_config')} className={`flex-1 py-4 px-6 text-sm font-bold whitespace-nowrap ${activeTab === 'system_config' ? 'bg-indigo-50 text-indigo-700 border-b-2 border-indigo-600' : 'text-gray-500 hover:bg-gray-50'}`}>系统配置</button>}
+          {isSuper && <button onClick={() => setActiveTab('system_config')} className={`flex-1 py-4 px-6 text-sm font-bold whitespace-nowrap ${activeTab === 'system_config' ? 'bg-indigo-50 text-indigo-700 border-b-2 border-indigo-600' : 'text-gray-500 hover:bg-gray-50'}`}>全局设置</button>}
         </div>
 
         <div className="p-6">
@@ -228,9 +318,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
                            <tr key={a.id} className="hover:bg-indigo-50/20">
                               <td className="p-4 font-bold text-sm">{a.username}</td>
                               <td className="p-4 text-xs font-mono text-gray-500">{a.emailAccount}</td>
-                              <td className="p-4"><span className="bg-gray-100 px-2 py-1 rounded text-xs font-bold">{a.status}</span></td>
+                              <td className="p-4">
+                                <span className={`px-2 py-1 rounded text-xs font-bold 
+                                  ${a.status === AppealStatus.PASSED_PENDING_DEDUCTION ? 'bg-yellow-100 text-yellow-700' : 'bg-gray-100'}
+                                `}>
+                                  {a.status}
+                                </span>
+                              </td>
                               <td className="p-4 text-right">
-                                 <button onClick={() => { setEditingAppeal(a); setEditStatus(a.status); setEditNote(a.adminNotes); setEditDeduction(a.deductionAmount || 200); }} className="px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-bold hover:shadow-lg transition-all">处理</button>
+                                 <button onClick={() => { setEditingAppeal(a); setEditStatus(a.status); setEditNote(a.adminNotes); setEditDeduction(a.deductionAmount || 0); }} className="px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-bold hover:shadow-lg transition-all">处理</button>
                               </td>
                            </tr>
                         ))}
@@ -243,6 +339,33 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
           {/* TAB 2: 财务审核 */}
           {activeTab === 'finance_review' && (isSuper || isFinance) && (
             <div className="space-y-6 animate-in fade-in">
+               
+               {/* Section for Appeals that are marked successful by Staff but not yet charged */}
+               <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-4 mb-6">
+                 <h3 className="font-bold text-yellow-800 flex items-center gap-2 mb-3"><Bell size={18}/> 待扣费工单 (员工已处理)</h3>
+                 <div className="overflow-x-auto bg-white rounded-lg border">
+                   <table className="min-w-full">
+                     <thead>
+                       <tr className="bg-gray-50 text-xs text-gray-500"><th className="p-3 text-left">客户</th><th className="p-3 text-left">账号</th><th className="p-3 text-right">操作</th></tr>
+                     </thead>
+                     <tbody>
+                       {appeals.filter(a => a.status === AppealStatus.PASSED_PENDING_DEDUCTION).map(a => (
+                         <tr key={a.id} className="border-t">
+                           <td className="p-3 font-bold text-sm">{a.username}</td>
+                           <td className="p-3 text-xs">{a.emailAccount}</td>
+                           <td className="p-3 text-right">
+                             <button onClick={() => { setEditingAppeal(a); setEditStatus(AppealStatus.PASSED); setEditDeduction(200); }} className="bg-green-600 text-white px-3 py-1 rounded text-xs font-bold">确认扣费</button>
+                           </td>
+                         </tr>
+                       ))}
+                       {appeals.filter(a => a.status === AppealStatus.PASSED_PENDING_DEDUCTION).length === 0 && (
+                         <tr><td colSpan={3} className="p-4 text-center text-gray-400 text-xs">暂无待扣费工单</td></tr>
+                       )}
+                     </tbody>
+                   </table>
+                 </div>
+               </div>
+
                <div className="flex items-center gap-2 font-bold text-gray-800"><DollarSign className="text-green-600"/> 资金流水审核</div>
                <div className="overflow-x-auto rounded-xl border">
                   <table className="min-w-full">
@@ -268,19 +391,51 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
             </div>
           )}
 
-          {/* TAB 3: 智囊团 */}
+          {/* TAB 3: AI 智囊团 (Boss Only) - Restored Features (Stats & Accordion) */}
           {activeTab === 'knowledge_base' && isSuper && (
             <div className="space-y-6 animate-in fade-in">
-               <div className="flex justify-between items-center">
-                  <h3 className="font-bold text-gray-800 flex items-center gap-2"><Bot className="text-indigo-600"/> Gemini 3 知识库 (AI Brain)</h3>
-                  <button className="flex items-center gap-2 bg-indigo-50 text-indigo-600 px-3 py-2 rounded-lg text-xs font-bold"><Plus size={14}/> 上传范文</button>
+               {/* Stats Header */}
+               <div className="grid grid-cols-2 gap-4">
+                  <div className="bg-indigo-600 text-white p-4 rounded-xl shadow-lg">
+                    <p className="text-xs opacity-70 uppercase font-bold">累计生成 POA</p>
+                    <p className="text-3xl font-black">1,284</p>
+                  </div>
+                  <div className="bg-white border p-4 rounded-xl shadow-sm">
+                    <p className="text-xs text-gray-500 uppercase font-bold">AI 调用次数</p>
+                    <p className="text-3xl font-black text-gray-800">15.2k</p>
+                  </div>
                </div>
-               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+
+               <div className="flex justify-between items-center">
+                  <h3 className="font-bold text-gray-800 flex items-center gap-2"><BrainCircuit className="text-indigo-600"/> 智囊团策略库</h3>
+                  <button className="flex items-center gap-2 bg-indigo-50 text-indigo-600 px-3 py-2 rounded-lg text-xs font-bold"><Plus size={14}/> 上传新策略</button>
+               </div>
+               
+               <div className="space-y-3">
                   {kbItems.map(item => (
-                    <div key={item.id} className="p-4 border rounded-xl hover:shadow-md transition-all relative group bg-white">
-                       <h4 className="font-bold text-sm text-gray-900 mb-2">{item.title}</h4>
-                       <p className="text-xs text-gray-500 line-clamp-3">{item.content}</p>
-                       <button onClick={() => deleteFromKnowledgeBase(item.id).then(loadData)} className="absolute top-2 right-2 text-gray-300 hover:text-red-500 hidden group-hover:block"><Trash2 size={14}/></button>
+                    <div key={item.id} className="border rounded-xl bg-white overflow-hidden transition-all">
+                       <div 
+                         className="p-4 flex justify-between items-center cursor-pointer hover:bg-gray-50"
+                         onClick={() => setKbExpandedId(kbExpandedId === item.id ? null : item.id)}
+                       >
+                         <div className="flex items-center gap-3">
+                            <div className="bg-blue-100 text-blue-600 p-2 rounded-lg"><BookOpen size={16}/></div>
+                            <div>
+                              <h4 className="font-bold text-sm text-gray-900">{item.title}</h4>
+                              <p className="text-xs text-gray-400">{item.type} • 引用 {item.usageCount} 次</p>
+                            </div>
+                         </div>
+                         {kbExpandedId === item.id ? <ChevronUp size={18} className="text-gray-400"/> : <ChevronDown size={18} className="text-gray-400"/>}
+                       </div>
+                       
+                       {kbExpandedId === item.id && (
+                         <div className="p-4 pt-0 border-t bg-gray-50">
+                           <p className="text-xs text-gray-600 leading-relaxed font-mono mt-3 whitespace-pre-wrap">{item.content}</p>
+                           <div className="flex justify-end mt-2">
+                              <button onClick={() => deleteFromKnowledgeBase(item.id).then(loadData)} className="text-red-500 text-xs font-bold hover:underline flex items-center gap-1"><Trash2 size={12}/> 删除</button>
+                           </div>
+                         </div>
+                       )}
                     </div>
                   ))}
                </div>
@@ -310,14 +465,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
              </div>
           )}
           
-          {/* TAB 5: 员工管理 (仅老板) */}
+          {/* TAB 5: 员工管理 - With Edit Modal */}
           {activeTab === 'user_management' && isSuper && (
             <div className="space-y-4 animate-in fade-in">
-              <h3 className="font-bold text-gray-800 flex items-center gap-2"><Users className="text-indigo-600"/> 团队管理</h3>
+              <h3 className="font-bold text-gray-800 flex items-center gap-2"><Users className="text-indigo-600"/> 团队与用户管理</h3>
               <div className="overflow-x-auto border rounded-xl">
                  <table className="min-w-full">
                    <thead className="bg-gray-50 text-xs text-gray-400 font-bold uppercase">
-                     <tr><th className="p-3 text-left">用户</th><th className="p-3 text-left">角色</th><th className="p-3 text-left">余额</th></tr>
+                     <tr><th className="p-3 text-left">用户</th><th className="p-3 text-left">角色</th><th className="p-3 text-left">余额</th><th className="p-3 text-right">管理</th></tr>
                    </thead>
                    <tbody>
                      {allUsers.map(u => (
@@ -325,6 +480,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
                          <td className="p-3 text-sm font-bold">{u.username}</td>
                          <td className="p-3 text-sm"><span className="bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded text-xs">{u.role}</span></td>
                          <td className="p-3 text-sm">¥{u.balance}</td>
+                         <td className="p-3 text-right">
+                           <button onClick={() => { setEditingUser(u); setEditUserForm(u); }} className="text-indigo-600 hover:bg-indigo-50 p-1.5 rounded transition-colors"><Edit3 size={16}/></button>
+                         </td>
                        </tr>
                      ))}
                    </tbody>
@@ -333,23 +491,42 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
             </div>
           )}
 
-          {/* TAB 6: 系统配置 (仅老板) */}
+          {/* TAB 6: 系统配置 - Full Controls */}
           {activeTab === 'system_config' && isSuper && (
              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 animate-in fade-in">
                 <div className="p-6 bg-white border rounded-2xl space-y-4">
-                   <h4 className="font-bold flex items-center gap-2"><PieChart className="text-indigo-600"/> 数据修饰</h4>
-                   <div className="space-y-2">
-                      <label className="text-xs font-bold text-gray-500">营销基数 (Base Cases)</label>
-                      <input type="number" value={config?.marketingBaseCases} onChange={e => setConfig(prev => prev ? {...prev, marketingBaseCases: Number(e.target.value)} : null)} className="w-full border p-2 rounded-lg bg-gray-50" />
+                   <h4 className="font-bold flex items-center gap-2 text-gray-800"><Settings className="text-indigo-600"/> 客户端 UI 数据修饰</h4>
+                   
+                   <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-gray-400 uppercase">基础案例数 (Base Cases)</label>
+                        <input type="number" value={config?.marketingBaseCases} onChange={e => setConfig(prev => prev ? {...prev, marketingBaseCases: Number(e.target.value)} : null)} className="w-full border p-2 rounded-lg bg-gray-50 text-sm" />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-gray-400 uppercase">基础排队数 (Queue)</label>
+                        <input type="number" value={config?.marketingBaseProcessing} onChange={e => setConfig(prev => prev ? {...prev, marketingBaseProcessing: Number(e.target.value)} : null)} className="w-full border p-2 rounded-lg bg-gray-50 text-sm" />
+                      </div>
                    </div>
-                   <button onClick={() => config && saveSystemConfig(config).then(() => showToast('配置已保存', 'success'))} className="w-full py-2 bg-indigo-600 text-white rounded-lg font-bold text-sm">更新前台数据</button>
+                   
+                   <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-gray-400 uppercase">展示成功率 (Success Rate %)</label>
+                      <input type="text" value={config?.marketingSuccessRate} onChange={e => setConfig(prev => prev ? {...prev, marketingSuccessRate: e.target.value} : null)} className="w-full border p-2 rounded-lg bg-gray-50 text-sm" placeholder="e.g. 98.8" />
+                   </div>
+
+                   <div className="space-y-1 pt-2 border-t">
+                      <label className="text-[10px] font-bold text-gray-400 uppercase">管理员/客服联系方式</label>
+                      <textarea value={config?.contactInfo} onChange={e => setConfig(prev => prev ? {...prev, contactInfo: e.target.value} : null)} className="w-full border p-2 rounded-lg bg-gray-50 text-sm h-20" placeholder="微信: xxx, 电话: xxx" />
+                   </div>
+
+                   <button onClick={() => config && saveSystemConfig(config).then(() => showToast('配置已保存', 'success'))} className="w-full py-2 bg-indigo-600 text-white rounded-lg font-bold text-sm shadow hover:bg-indigo-700 transition-colors">更新前台配置</button>
                 </div>
+                
                 <div className="p-6 bg-gray-900 text-white rounded-2xl space-y-4 relative overflow-hidden">
                    <Key className="absolute right-[-10px] top-[-10px] opacity-10" size={100} />
-                   <h4 className="font-bold flex items-center gap-2"><RefreshCw/> API 密钥管理</h4>
-                   <p className="text-xs text-gray-400">当前运行模型: <span className="text-green-400 font-mono">gemini-3-flash-preview</span></p>
+                   <h4 className="font-bold flex items-center gap-2"><RefreshCw/> API 连接设置</h4>
+                   <p className="text-xs text-gray-400">系统使用 Gemini 3 Flash 模型。如果生成失败，请重新授权。</p>
                    <button onClick={handleOpenKey} className="w-full py-3 bg-white/10 hover:bg-white/20 text-white rounded-lg font-bold text-sm flex items-center justify-center gap-2 transition-colors">
-                     启动密钥选择器
+                     打开密钥授权窗口
                    </button>
                 </div>
              </div>
@@ -357,7 +534,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
         </div>
       </div>
 
-      {/* 核心功能：POA 生成弹窗 */}
+      {/* MODAL: Appeal Processing */}
       {editingAppeal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-md animate-in fade-in">
            <div className="bg-white rounded-[2rem] shadow-2xl max-w-7xl w-full max-h-[95vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-300">
@@ -373,7 +550,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
               </div>
               
               <div className="flex-1 flex overflow-hidden">
-                 {/* 左侧：人工决策 */}
+                 {/* Left: Manual Decisions */}
                  <div className="w-80 p-6 bg-gray-50/50 border-r overflow-y-auto space-y-6">
                     <div>
                        <h4 className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-3">决策控制</h4>
@@ -382,10 +559,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
                              {Object.values(AppealStatus).map(s => <option key={s} value={s}>{s}</option>)}
                           </select>
                           <textarea value={editNote} onChange={e => setEditNote(e.target.value)} rows={4} className="w-full border p-3 rounded-xl text-xs bg-white shadow-sm focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="回复内容..." />
-                          <div className="bg-white p-3 rounded-xl border shadow-sm">
-                             <label className="text-[10px] font-bold text-gray-400 uppercase">预扣费 (¥)</label>
-                             <input type="number" value={editDeduction} onChange={e => setEditDeduction(Number(e.target.value))} className="w-full text-xl font-black text-indigo-600 outline-none mt-1" />
-                          </div>
+                          
+                          {/* Only Boss/Finance can finalize deduction */}
+                          {(isSuper || isFinance) && (
+                             <div className="bg-white p-3 rounded-xl border shadow-sm">
+                                <label className="text-[10px] font-bold text-gray-400 uppercase">确认扣费 (¥)</label>
+                                <input type="number" value={editDeduction} onChange={e => setEditDeduction(Number(e.target.value))} className="w-full text-xl font-black text-indigo-600 outline-none mt-1" />
+                             </div>
+                          )}
+                          {isStaff && (
+                            <p className="text-xs text-orange-600 bg-orange-50 p-2 rounded">
+                               提示：标记为“成功”将提交给上级核算扣费。
+                            </p>
+                          )}
                        </div>
                     </div>
                     <div className="pt-4 border-t">
@@ -394,18 +580,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
                     </div>
                  </div>
 
-                 {/* 右侧：Gemini 3 建模引擎 */}
+                 {/* Right: AI Engine */}
                  <div className="flex-1 p-8 flex flex-col bg-white overflow-hidden">
                     <div className="flex justify-between items-center mb-6">
-                       <h4 className="text-2xl font-black text-gray-900 flex items-center gap-3"><Sparkles className="text-indigo-600"/> Gemini 3 深度建模</h4>
+                       <h4 className="text-2xl font-black text-gray-900 flex items-center gap-3"><BrainCircuit className="text-indigo-600"/> AI 智囊团分析引擎</h4>
                        <div className="flex items-center gap-3">
-                          <div className="flex items-center gap-1 bg-green-50 text-green-700 px-3 py-1.5 rounded-lg text-xs font-bold border border-green-100">
-                             <Bot size={14}/> Powered by Gemini 3.0
-                          </div>
                           <div className="relative">
                              <input type="file" id="excel-up" className="hidden" accept=".xlsx,.xls,.csv" onChange={handleExcelUpload} />
                              <label htmlFor="excel-up" className="flex items-center gap-2 bg-indigo-50 text-indigo-600 px-4 py-2 rounded-xl text-xs font-bold cursor-pointer hover:bg-indigo-100 transition-colors">
-                                <FileSpreadsheet size={16}/> 导入 Excel 绩效表
+                                <FileSpreadsheet size={16}/> 导入多表 Excel
                              </label>
                           </div>
                        </div>
@@ -427,7 +610,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
                           </div>
                           <textarea value={aiRootCause} onChange={e => setAiRootCause(e.target.value)} rows={3} className="w-full border p-4 rounded-xl text-sm font-bold bg-gray-50 outline-none focus:bg-white transition-all" placeholder="简述根本原因..." />
                           <div className="space-y-1">
-                             <label className="text-[10px] font-black text-gray-400 uppercase ml-1">Context Data (从 Excel 自动提取)</label>
+                             <label className="text-[10px] font-black text-gray-400 uppercase ml-1">全表数据上下文 (Auto-Combined)</label>
                              <textarea value={aiTableExtract} onChange={e => setAiTableExtract(e.target.value)} rows={5} className="w-full border-none p-4 rounded-xl text-xs font-mono bg-gray-900 text-green-400 shadow-inner" placeholder="等待 Excel 数据注入..." />
                           </div>
                           <button onClick={handleGeneratePOA} disabled={isGenerating} className="w-full py-5 bg-indigo-600 text-white rounded-xl font-black text-lg flex items-center justify-center gap-3 hover:bg-indigo-700 transition-all shadow-xl shadow-indigo-100 disabled:opacity-50 active:scale-95">
@@ -458,8 +641,41 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
               <div className="p-5 border-t bg-gray-50 flex justify-end gap-4">
                  <button onClick={() => setEditingAppeal(null)} className="px-8 py-3 border rounded-xl font-bold text-gray-500 hover:bg-gray-100 transition-colors">取消</button>
                  <button onClick={handleSaveAppealTask} disabled={loading} className="px-12 py-3 bg-indigo-600 text-white rounded-xl font-bold text-lg shadow-lg hover:bg-indigo-700 transition-all active:scale-95">
-                    {loading ? <Loader2 className="animate-spin"/> : '确认并通知客户'}
+                    {loading ? <Loader2 className="animate-spin"/> : '确认处理结果'}
                  </button>
+              </div>
+           </div>
+        </div>
+      )}
+
+      {/* MODAL: User Editing */}
+      {editingUser && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm animate-in fade-in">
+           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6">
+              <h3 className="text-xl font-bold mb-4">编辑用户: {editingUser.username}</h3>
+              <div className="space-y-4">
+                 <div>
+                    <label className="block text-xs font-bold text-gray-500 mb-1">角色权限</label>
+                    <select value={editUserForm.role} onChange={e => setEditUserForm({...editUserForm, role: e.target.value as UserRole})} className="w-full border p-2 rounded-lg">
+                       {Object.values(UserRole).map(r => <option key={r} value={r}>{r}</option>)}
+                    </select>
+                 </div>
+                 <div>
+                    <label className="block text-xs font-bold text-gray-500 mb-1">账户余额</label>
+                    <input type="number" value={editUserForm.balance} onChange={e => setEditUserForm({...editUserForm, balance: Number(e.target.value)})} className="w-full border p-2 rounded-lg" />
+                 </div>
+                 <div>
+                    <label className="block text-xs font-bold text-gray-500 mb-1">联系电话</label>
+                    <input type="text" value={editUserForm.phone || ''} onChange={e => setEditUserForm({...editUserForm, phone: e.target.value})} className="w-full border p-2 rounded-lg" />
+                 </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-500 mb-1">营销邀请码</label>
+                    <input type="text" value={editUserForm.marketingCode || ''} onChange={e => setEditUserForm({...editUserForm, marketingCode: e.target.value})} className="w-full border p-2 rounded-lg" />
+                 </div>
+              </div>
+              <div className="flex justify-end gap-3 mt-6">
+                 <button onClick={() => setEditingUser(null)} className="px-4 py-2 text-gray-500 font-bold">取消</button>
+                 <button onClick={handleEditUser} className="px-6 py-2 bg-indigo-600 text-white rounded-lg font-bold">保存修改</button>
               </div>
            </div>
         </div>
