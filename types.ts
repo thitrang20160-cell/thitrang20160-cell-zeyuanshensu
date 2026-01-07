@@ -11,15 +11,15 @@ export enum AppealStatus {
   PENDING = '待处理',
   PROCESSING = '处理中',
   FOLLOW_UP = '跟进中',
-  PASSED_PENDING_DEDUCTION = '申诉通过-待扣费', // 员工提交后的状态
-  PASSED = '申诉通过-已扣费', // 财务审核后的状态
+  PASSED_PENDING_DEDUCTION = '申诉通过-待扣费', // 员工操作后的状态
+  PASSED = '申诉通过-已扣费', // 财务/老板审批后的最终状态
   REJECTED = '申诉驳回',
 }
 
 export enum TransactionType {
   RECHARGE = '充值',
   DEDUCTION = '扣费',
-  COMMISSION = '提成收入', // 营销角色的收入类型
+  COMMISSION = '提成收入', // 营销员的收入
 }
 
 export enum TransactionStatus {
@@ -34,8 +34,8 @@ export interface User {
   phone?: string;
   role: UserRole;
   balance: number;
-  marketingCode?: string; // 如果是营销角色，这是他的唯一码
-  referredBy?: string;    // 如果是客户，这是他绑定的营销码
+  marketingCode?: string; // 营销员的专属邀请码
+  referredBy?: string;    // 客户关联的营销码
   createdAt: string;
 }
 
@@ -64,7 +64,7 @@ export interface Transaction {
   type: TransactionType;
   amount: number;
   status: TransactionStatus;
-  appealId?: string; // 关联的工单ID，用于结算提成
+  appealId?: string; // 关联的申诉案件
   note?: string;
   createdAt: string;
 }
@@ -72,7 +72,7 @@ export interface Transaction {
 export interface SystemConfig {
   contactInfo: string;
   paymentQrUrl?: string;
-  commissionRate: number; // 全局提成比例，例如 0.2 代表 20%
+  commissionRate: number; // 提成比例 (如 0.2 代表 20%)
   marketingBaseCases?: number;
   marketingSuccessRate?: string;
   marketingBaseProcessing?: number;
