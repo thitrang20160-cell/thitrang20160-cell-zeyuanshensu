@@ -11,15 +11,16 @@ export enum AppealStatus {
   PENDING = '待处理',
   PROCESSING = '处理中',
   FOLLOW_UP = '跟进中',
-  PASSED_PENDING_DEDUCTION = '申诉通过-待扣费', // 员工操作后的状态
-  PASSED = '申诉通过-已扣费', // 财务/老板审批后的最终状态
+  PASSED_PENDING_DEDUCTION = '申诉通过-待扣费', // 员工操作后的中间状态
+  PASSED = '申诉通过-已扣费', // 最终闭环状态
   REJECTED = '申诉驳回',
 }
 
 export enum TransactionType {
   RECHARGE = '充值',
   DEDUCTION = '扣费',
-  COMMISSION = '提成收入', // 营销员的收入
+  COMMISSION = '营销提成', // 营销员的收入
+  STAFF_BONUS = '员工绩效', // 新增：申诉专员的提成
 }
 
 export enum TransactionStatus {
@@ -53,7 +54,8 @@ export interface Appeal {
   statusDetail?: string;
   adminNotes: string;
   deductionAmount: number;
-  generatedPoa?: string; // 新增：存储AI生成的POA内容
+  generatedPoa?: string;
+  handlerId?: string; // 核心修复：记录是谁处理了这个工单，用于结算绩效
   createdAt: string;
   updatedAt: string;
 }
@@ -65,7 +67,7 @@ export interface Transaction {
   type: TransactionType;
   amount: number;
   status: TransactionStatus;
-  appealId?: string; // 关联的申诉案件
+  appealId?: string; // 必须关联申诉案件，否则无法计算员工绩效
   note?: string;
   createdAt: string;
 }
@@ -73,11 +75,12 @@ export interface Transaction {
 export interface SystemConfig {
   contactInfo: string;
   paymentQrUrl?: string;
-  commissionRate: number; // 提成比例 (如 0.2 代表 20%)
+  commissionRate: number; // 营销提成比例 (如 0.1)
+  staffBonusRate?: number; // 新增：员工提成比例 (如 0.1)
   marketingBaseCases?: number;
   marketingSuccessRate?: string;
   marketingBaseProcessing?: number;
-  aiStats?: { // 新增：AI 统计数据
+  aiStats?: { 
     totalPoa: number;
     apiCalls: number;
   };

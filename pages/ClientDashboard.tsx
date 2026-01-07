@@ -86,18 +86,25 @@ export const ClientDashboard: React.FC<ClientDashboardProps> = ({ currentUser, r
   // Initial Data Load
   const loadData = useCallback(async () => {
     // Parallel fetch for speed
-    const [allAppeals, allTxs, config] = await Promise.all([
-      getAppeals(),
-      getTransactions(),
+    // Use larger limit to ensure we get user data and stats
+    const [appealsRes, txsRes, config] = await Promise.all([
+      getAppeals(0, 1000),
+      getTransactions(0, 1000),
       getSystemConfig()
     ]);
+
+    const allAppeals = appealsRes.data;
+    const allTxs = txsRes.data;
 
     // --- Calculate Platform Stats (Realtime + Marketing Baseline from Config) ---
     // 基数：让平台看起来运营了很久 (Social Proof)
     const BASE_CASES = config?.marketingBaseCases ?? 3680;
     const BASE_PROCESSING = config?.marketingBaseProcessing ?? 18;
     
-    const realTotal = allAppeals.length;
+    // Use total count from DB or fallback to fetched length
+    const realTotal = appealsRes.count || allAppeals.length;
+    
+    // These stats are calculated based on the fetched batch
     const realProcessing = allAppeals.filter(a => a.status === AppealStatus.PENDING || a.status === AppealStatus.PROCESSING).length;
     const realPassed = allAppeals.filter(a => a.status === AppealStatus.PASSED).length;
     const realRejected = allAppeals.filter(a => a.status === AppealStatus.REJECTED).length;
