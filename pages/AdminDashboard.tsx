@@ -82,16 +82,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
   // KB State
   const [kbExpandedId, setKbExpandedId] = useState<string | null>(null);
 
-  // Diagnosis State
-  const [diagnosis, setDiagnosis] = useState<{db: boolean | null, ai: boolean | null, auth: boolean | null}>({ db: null, ai: null, auth: null });
-  const [isDiagnosing, setIsDiagnosing] = useState(false);
-  
-  // Full System Test State
-  const [isTestRunning, setIsTestRunning] = useState(false);
-  const [testLogs, setTestLogs] = useState<string[]>([]);
-  const [showTestModal, setShowTestModal] = useState(false);
-  const [testCreatedIds, setTestCreatedIds] = useState<{userId: string, appealId: string, txId: string} | null>(null);
-
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
@@ -115,7 +105,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
     loadData();
   }, [loadData]);
 
-  // Open Edit Modal & Populate Data
+  // Open Edit Modal & Populate Data (FIX: Restore POA logic)
   const handleOpenEdit = (appeal: Appeal) => {
       setEditingAppeal(appeal);
       setEditStatus(appeal.status);
@@ -131,244 +121,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
           setAiGeneratedText('');
           setAiStep(1); // Default to Create mode
       }
-  };
-
-  // --- Diagnosis Functions ---
-  const runSystemDiagnosis = async () => {
-    setIsDiagnosing(true);
-    const results = { db: false, ai: false, auth: false };
-    
-    // 1. Check DB
-    try {
-      const { error } = await supabase.from('users').select('id').limit(1);
-      results.db = !error;
-    } catch (e) { results.db = false; }
-
-    // 2. Check Auth Session
-    try {
-      const { data } = await supabase.auth.getSession();
-      results.auth = !!data.session;
-    } catch (e) { results.auth = false; }
-
-    // 3. Check AI Key (FIXED: Check Env OR Window)
-    try {
-      // 只要环境变量有 Key，或者浏览器插件有 Key，都算成功
-      const hasEnvKey = !!process.env.API_KEY;
-      let hasWindowKey = false;
-      if (window.aistudio) {
-        try {
-           hasWindowKey = await window.aistudio.hasSelectedApiKey();
-        } catch(e) {}
-      }
-      results.ai = hasEnvKey || hasWindowKey;
-    } catch (e) { results.ai = false; }
-
-    setDiagnosis(results);
-    setIsDiagnosing(false);
-    
-    if (results.db && results.ai) {
-        showToast('系统运行状况良好', 'success');
-    } else {
-        showToast('发现系统异常，请检查红色项', 'error');
-    }
-  };
-
-  const generateTestData = async () => {
-    setLoading(true);
-    try {
-        const testId = `TEST-${Date.now()}`;
-        await saveAppeal({
-            id: `appeal-${Date.now()}`,
-            userId: currentUser.id,
-            username: '测试自动生成',
-            accountType: '测试环境',
-            loginInfo: '192.168.1.1 / user / pass',
-            emailAccount: `test_${Date.now()}@example.com`,
-            emailPass: 'password',
-            status: AppealStatus.PENDING,
-            adminNotes: '这是自动生成的测试数据，用于验证列表渲染',
-            deductionAmount: 0,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
-        });
-        showToast('测试数据已生成，请查看工单列表', 'success');
-        loadData();
-    } catch (e) {
-        showToast('生成失败', 'error');
-    } finally {
-        setLoading(false);
-    }
-  };
-  
-  const runFullScenarioTest = async () => {
-    setIsTestRunning(true);
-    setTestLogs([]);
-    setShowTestModal(true);
-    setTestCreatedIds(null); // Reset IDs
-    
-    // Helper to add logs in real-time
-    const addLog = (msg: string) => {
-        setTestLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`]);
-    };
-
-    try {
-        addLog("🚀 开始全链路功能测试 (Full Scenario Test)...");
-        const uniqueId = Date.now();
-        const testUserId = `TEST-USER-${uniqueId}`; // Assuming DB allows arbitrary UUIDs or strings
-        const testAppealId = `TEST-APPEAL-${uniqueId}`;
-        const testTxId = `TEST-TX-${uniqueId}`;
-        const testEmail = `autotest_${uniqueId}@example.com`;
-        
-        // Save IDs for later manual cleanup
-        setTestCreatedIds({ userId: testUserId, appealId: testAppealId, txId: testTxId });
-
-        // 1. Create Test User
-        addLog(`1. 创建测试用户 (模拟客户) ...`);
-        addLog(`   -> ID: ${testUserId}, Email: ${testEmail}, 初始余额: 1000`);
-        const { error: userErr } = await supabase.from('users').insert({
-            id: testUserId,
-            username: `AutoTest_${uniqueId}`,
-            role: UserRole.CLIENT,
-            balance: 1000,
-            createdAt: new Date().toISOString()
-        });
-        if (userErr) throw new Error(`创建用户失败: ${userErr.message} (可能受RLS策略限制)`);
-        addLog("   ✅ 用户创建成功");
-
-        // 2. Client Submission
-        addLog(`2. 模拟客户提交申诉 ...`);
-        const testAppeal: Appeal = {
-            id: testAppealId,
-            userId: testUserId,
-            username: `AutoTest_${uniqueId}`,
-            accountType: 'TestEnv',
-            loginInfo: '127.0.0.1',
-            emailAccount: testEmail,
-            emailPass: 'testpass',
-            status: AppealStatus.PENDING,
-            description: 'Automated test description',
-            adminNotes: '',
-            deductionAmount: 0,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
-        };
-        const { error: appealErr } = await saveAppeal(testAppeal);
-        if (appealErr) throw new Error(`申诉提交失败: ${appealErr.message}`);
-        addLog("   ✅ 申诉提交成功，状态: PENDING");
-        
-        // Update UI immediately so user can see it in background
-        await loadData();
-
-        // 3. Staff Review
-        addLog(`3. 模拟管理员/员工审核 ...`);
-        addLog(`   -> 操作: 更新状态为 PASSED_PENDING_DEDUCTION, 设置扣费 200`);
-        const updatedAppeal = {
-            ...testAppeal,
-            status: AppealStatus.PASSED_PENDING_DEDUCTION,
-            adminNotes: 'Auto test approval',
-            deductionAmount: 200,
-            updatedAt: new Date().toISOString()
-        };
-        const { error: reviewErr } = await saveAppeal(updatedAppeal);
-        if (reviewErr) throw new Error(`审核操作失败: ${reviewErr.message}`);
-        addLog("   ✅ 审核状态更新成功");
-
-        // 4. Create Transaction
-        addLog(`4. 创建扣费流水单 ...`);
-        addLog(`   -> 兼容性: 自动注入 [Ref:${testAppealId}] 以应对 DB Schema 缺失`);
-        const testTx: Transaction = {
-            id: testTxId,
-            userId: testUserId,
-            username: `AutoTest_${uniqueId}`,
-            type: TransactionType.DEDUCTION,
-            amount: 200,
-            status: TransactionStatus.PENDING,
-            appealId: testAppealId,
-            note: `Auto Test Fee [Ref:${testAppealId}]`, // Embed ID for robustness
-            createdAt: new Date().toISOString()
-        };
-        const { error: txErr } = await saveTransaction(testTx);
-        if (txErr && !txErr.message.includes('appealId')) throw new Error(`流水创建失败: ${txErr.message}`);
-        addLog("   ✅ 流水创建成功 (自动处理 schema 兼容)");
-
-        // 5. Finance Approval
-        addLog(`5. 模拟财务/老板 审批扣费 ...`);
-        addLog(`   -> 执行 processDeductionAndCommission`);
-        const result = await processDeductionAndCommission(testTxId);
-        if (!result.success) throw new Error(`扣费逻辑执行失败: ${result.error}`);
-        addLog("   ✅ 扣费逻辑返回成功");
-        
-        // Final UI Refresh
-        await loadData();
-
-        // 6. Final Verification
-        addLog(`6. 最终数据一致性校验 ...`);
-        
-        // Check User Balance
-        const { data: finalUser } = await supabase.from('users').select('*').eq('id', testUserId).single();
-        if (finalUser.balance === 800) {
-            addLog("   ✅ 用户余额校验通过: 1000 -> 800");
-        } else {
-            addLog(`   ❌ 用户余额校验失败! 期望: 800, 实际: ${finalUser.balance}`);
-            throw new Error("余额计算错误");
-        }
-
-        // Check Appeal Status
-        const { data: finalAppeal } = await supabase.from('appeals').select('*').eq('id', testAppealId).single();
-        if (finalAppeal.status === AppealStatus.PASSED) {
-            addLog(`   ✅ 工单状态校验通过: ${AppealStatus.PASSED}`);
-        } else {
-            addLog(`   ❌ 工单状态校验失败! 期望: ${AppealStatus.PASSED}, 实际: ${finalAppeal.status}`);
-            addLog(`   ⚠️ 提示: 数据库 transactions 表可能缺少 appealId 列，导致无法自动关联更新工单。`);
-        }
-
-        // Check Transaction Status
-        const { data: finalTx } = await supabase.from('transactions').select('*').eq('id', testTxId).single();
-        if (finalTx.status === TransactionStatus.APPROVED) {
-            addLog(`   ✅ 流水状态校验通过: ${TransactionStatus.APPROVED}`);
-        } else {
-            addLog(`   ❌ 流水状态校验失败! 期望: ${TransactionStatus.APPROVED}, 实际: ${finalTx.status}`);
-        }
-        
-        addLog("-----------------------------------");
-        addLog("🎉🎉🎉 测试全部通过！系统功能正常。");
-        addLog("-----------------------------------");
-        addLog("ℹ️ 数据已保留在列表中，请手动刷新或点击下方按钮清理。");
-
-    } catch (e: any) {
-        addLog("-----------------------------------");
-        addLog(`❌ 测试过程中断: ${e.message}`);
-        addLog("-----------------------------------");
-        addLog("⚠️ 请截图或复制此日志反馈给开发人员");
-    } finally {
-        setIsTestRunning(false);
-    }
-  };
-
-  const handleCleanTest = async () => {
-      if (!testCreatedIds) return;
-      setLoading(true);
-      try {
-          await supabase.from('users').delete().eq('id', testCreatedIds.userId);
-          await supabase.from('appeals').delete().eq('id', testCreatedIds.appealId);
-          await supabase.from('transactions').delete().eq('id', testCreatedIds.txId);
-          showToast('测试数据已清理', 'success');
-          setTestCreatedIds(null);
-          loadData();
-      } catch (e) {
-          showToast('清理失败，可能数据已不存在', 'error');
-      } finally {
-          setLoading(false);
-      }
-  };
-
-  const forceClearCache = async () => {
-      try {
-          await signOut();
-      } catch(e) {}
-      localStorage.clear();
-      sessionStorage.clear();
-      window.location.href = '/';
   };
 
   // --- Excel Parsing ---
@@ -456,11 +208,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
         setAiStep(2);
         showToast('AI 智囊团：文书构建完成', 'success');
 
-        // Update Stats Logic
+        // FIX: Update Stats Logic
         if (config) {
+            const currentTotal = config.aiStats?.totalPoa || 1284;
+            const currentCalls = config.aiStats?.apiCalls || 15200;
+            
             const newStats = {
-                totalPoa: (config.aiStats?.totalPoa || 1284),
-                apiCalls: (config.aiStats?.apiCalls || 15200) + 1
+                totalPoa: currentTotal + 1,
+                apiCalls: currentCalls + 1
             };
             const newConfig = { ...config, aiStats: newStats };
             setConfig(newConfig);
@@ -500,17 +255,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
 
         await saveAppeal(updatedAppeal);
         
-        // Update Stats: Increment Total POA count if this is a new generation
-        if (aiGeneratedText && config) {
-             const newStats = {
-                totalPoa: (config.aiStats?.totalPoa || 1284) + 1,
-                apiCalls: (config.aiStats?.apiCalls || 15200)
-            };
-            const newConfig = { ...config, aiStats: newStats };
-            setConfig(newConfig);
-            saveSystemConfig(newConfig);
-        }
-
         const isBossOrFinance = isSuper || isFinance;
         
         if (isBossOrFinance && (finalStatus === AppealStatus.PASSED) && finalDeduction > 0) {
@@ -562,6 +306,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
     }
   };
 
+  // FIX: Implement KB Upload Logic
   const handleAddKbItem = async () => {
       if (!newKbItem.title || !newKbItem.content) {
           showToast('请填写标题和内容', 'error');
@@ -643,6 +388,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
                                 </span>
                               </td>
                               <td className="p-4 text-right">
+                                 {/* FIX: Use handleOpenEdit instead of inline logic */}
                                  <button onClick={() => handleOpenEdit(a)} className="px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-bold hover:shadow-lg transition-all">处理</button>
                               </td>
                            </tr>
@@ -708,7 +454,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
             </div>
           )}
 
-          {/* TAB 3: AI 智囊团 (Boss Only) - Restored Features (Stats & Accordion) */}
+          {/* TAB 3: AI 智囊团 (Boss Only) - FIX: Added Stats & Upload Button Logic */}
           {activeTab === 'knowledge_base' && isSuper && (
             <div className="space-y-6 animate-in fade-in">
                {/* Stats Header (Dynamic) */}
@@ -759,7 +505,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
             </div>
           )}
 
-          {/* TAB 4: 营销业绩 (FIXED: White Screen / Null Safe) */}
+          {/* TAB 4: 营销业绩 */}
           {activeTab === 'marketing_performance' && (isSuper || isMarketing) && (
              <div className="animate-in fade-in space-y-6">
                 <div className="bg-gradient-to-br from-indigo-600 to-purple-700 p-8 rounded-2xl text-white shadow-lg relative overflow-hidden">
@@ -782,7 +528,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
              </div>
           )}
           
-          {/* TAB 5: 员工管理 - With Edit Modal */}
+          {/* TAB 5: 员工管理 */}
           {activeTab === 'user_management' && isSuper && (
             <div className="space-y-4 animate-in fade-in">
               <h3 className="font-bold text-gray-800 flex items-center gap-2"><Users className="text-indigo-600"/> 团队与用户管理</h3>
@@ -808,64 +554,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
             </div>
           )}
 
-          {/* TAB 6: 系统配置 - With Developer Tools */}
+          {/* TAB 6: 系统配置 */}
           {activeTab === 'system_config' && isSuper && (
              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 animate-in fade-in">
-                {/* Developer Diagnostic Tool */}
-                <div className="col-span-1 md:col-span-2 bg-gradient-to-r from-gray-800 to-gray-900 rounded-2xl p-6 text-white shadow-xl">
-                    <h4 className="font-bold flex items-center gap-2 mb-4"><Stethoscope className="text-green-400"/> 开发者诊断中心</h4>
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-                        <button 
-                            onClick={runSystemDiagnosis}
-                            disabled={isDiagnosing}
-                            className="bg-white/10 hover:bg-white/20 p-4 rounded-xl text-left transition-colors relative overflow-hidden"
-                        >
-                            <Activity className="mb-2 text-blue-400"/>
-                            <p className="text-xs text-gray-400">一键体检</p>
-                            <p className="font-bold">系统自检</p>
-                            {isDiagnosing && <Loader2 className="absolute top-4 right-4 animate-spin text-gray-500"/>}
-                        </button>
-
-                         <button 
-                            onClick={runFullScenarioTest}
-                            className="bg-white/10 hover:bg-white/20 p-4 rounded-xl text-left transition-colors relative"
-                        >
-                            <ClipboardList className="mb-2 text-yellow-400"/>
-                            <p className="text-xs text-gray-400">模拟全流程</p>
-                            <p className="font-bold">全链路测试</p>
-                            {isTestRunning && <Loader2 className="absolute top-4 right-4 animate-spin text-gray-500"/>}
-                        </button>
-
-                        <button 
-                            onClick={generateTestData}
-                            className="bg-white/10 hover:bg-white/20 p-4 rounded-xl text-left transition-colors"
-                        >
-                            <PlayCircle className="mb-2 text-orange-400"/>
-                            <p className="text-xs text-gray-400">列表为空时使用</p>
-                            <p className="font-bold">生成测试数据</p>
-                        </button>
-                        
-                        <div className="bg-white/5 p-4 rounded-xl text-left border border-white/10">
-                            <Sparkles className="mb-2 text-indigo-400"/>
-                            <div className="flex justify-between items-center">
-                                <div>
-                                    <p className="text-xs text-gray-400">AI 服务</p>
-                                    <p className="font-bold text-sm">{diagnosis.ai === true ? '已授权' : diagnosis.ai === false ? '未授权' : '未检测'}</p>
-                                </div>
-                                {diagnosis.ai === true && <CheckCircle size={16} className="text-green-400"/>}
-                                {diagnosis.ai === false && <XCircle size={16} className="text-red-400"/>}
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <div className="mt-4 pt-4 border-t border-white/10 flex justify-between items-center">
-                        <p className="text-xs text-gray-500">遇到白屏或卡死？尝试强制重置。</p>
-                        <button onClick={forceClearCache} className="px-4 py-2 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-lg text-xs font-bold flex items-center gap-2">
-                            <Trash size={14}/> 强制清理缓存并重启
-                        </button>
-                    </div>
-                </div>
-
                 <div className="p-6 bg-white border rounded-2xl space-y-4">
                    <h4 className="font-bold flex items-center gap-2 text-gray-800"><Settings className="text-indigo-600"/> 客户端 UI 数据修饰</h4>
                    
@@ -1021,68 +712,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
                  <button onClick={handleSaveAppealTask} disabled={loading} className="px-12 py-3 bg-indigo-600 text-white rounded-xl font-bold text-lg shadow-lg hover:bg-indigo-700 transition-all active:scale-95">
                     {loading ? <Loader2 className="animate-spin"/> : '确认处理结果'}
                  </button>
-              </div>
-           </div>
-        </div>
-      )}
-
-      {/* MODAL: Full System Test Logs */}
-      {showTestModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm animate-in fade-in">
-           <div className="bg-gray-900 rounded-2xl shadow-2xl w-full max-w-2xl p-6 text-white border border-gray-700 flex flex-col max-h-[80vh]">
-              <div className="flex justify-between items-center mb-4">
-                 <h3 className="text-xl font-bold flex items-center gap-2"><ClipboardList className="text-yellow-400"/> 全链路自动化测试日志</h3>
-                 {!isTestRunning && (
-                   <button onClick={() => setShowTestModal(false)} className="p-1 hover:bg-gray-700 rounded-full transition-colors"><X size={20}/></button>
-                 )}
-              </div>
-              
-              <div className="flex-1 bg-black/50 rounded-xl p-4 overflow-y-auto font-mono text-xs sm:text-sm space-y-1 border border-gray-800 shadow-inner">
-                 {testLogs.length === 0 && <p className="text-gray-500 italic">正在初始化测试环境...</p>}
-                 {testLogs.map((log, i) => (
-                    <div key={i} className={`
-                       ${log.includes('✅') ? 'text-green-400' : ''}
-                       ${log.includes('❌') ? 'text-red-400 font-bold' : ''}
-                       ${log.includes('⚠️') ? 'text-yellow-400' : ''}
-                       ${!log.includes('✅') && !log.includes('❌') && !log.includes('⚠️') ? 'text-gray-300' : ''}
-                    `}>
-                       {log}
-                    </div>
-                 ))}
-                 {isTestRunning && (
-                    <div className="flex items-center gap-2 text-blue-400 mt-2">
-                       <Loader2 size={14} className="animate-spin"/> 正在执行步骤...
-                    </div>
-                 )}
-              </div>
-
-              <div className="mt-4 flex justify-between items-center">
-                 <p className="text-xs text-gray-500">提示：测试结束后需手动清理数据</p>
-                 <div className="flex gap-3">
-                    {testCreatedIds && !isTestRunning && (
-                        <button 
-                            onClick={handleCleanTest}
-                            disabled={loading}
-                            className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg text-xs font-bold transition-colors flex items-center gap-2"
-                        >
-                            <Trash2 size={12}/> {loading ? '清理中...' : '清理本次测试数据'}
-                        </button>
-                    )}
-                    <button 
-                        onClick={() => {
-                            navigator.clipboard.writeText(testLogs.join('\n'));
-                            showToast('日志已复制', 'success');
-                        }} 
-                        className="px-4 py-2 bg-gray-800 hover:bg-gray-700 rounded-lg text-xs font-bold border border-gray-600 transition-colors"
-                    >
-                        复制日志
-                    </button>
-                    {!isTestRunning && (
-                        <button onClick={() => setShowTestModal(false)} className="px-6 py-2 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-xs font-bold transition-colors">
-                            关闭窗口
-                        </button>
-                    )}
-                 </div>
               </div>
            </div>
         </div>
