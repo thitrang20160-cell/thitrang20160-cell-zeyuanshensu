@@ -68,8 +68,18 @@ export const processDeductionAndCommission = async (txId: string): Promise<{succ
     if (clientError) throw clientError;
 
     // 4. 更新申诉工单状态为“已扣费”
-    if (tx.appealId) {
-      await supabase.from('appeals').update({ status: AppealStatus.PASSED }).eq('id', tx.appealId);
+    // Smart Fallback: If appealId column is missing or null, try to parse from Note [Ref:xxxx]
+    let targetAppealId = tx.appealId;
+    if (!targetAppealId && tx.note) {
+        const match = tx.note.match(/\[Ref:(.*?)\]/);
+        if (match && match[1]) {
+            targetAppealId = match[1];
+        }
+    }
+
+    if (targetAppealId) {
+      const { error: appealError } = await supabase.from('appeals').update({ status: AppealStatus.PASSED }).eq('id', targetAppealId);
+      if (appealError) console.warn("Failed to update appeal status", appealError);
     }
 
     // 5. 更新原交易单状态
@@ -117,7 +127,20 @@ export const getTransactions = async () => {
   return data || [];
 };
 
-export const saveTransaction = async (tx: Transaction) => await supabase.from('transactions').upsert(tx);
+export const saveTransaction = async (tx: Transaction) => {
+    // Attempt standard save
+    const { error } = await supabase.from('transactions').upsert(tx);
+    
+    // Robustness: If 'appealId' column is missing in DB, retry without it
+    // This allows the app to work on older DB schemas without migration
+    if (error && (error.message.includes('column') || error.message.includes('appealId'))) {
+        console.warn("Database schema mismatch detected (missing appealId). Falling back to compatibility mode.");
+        const { appealId, ...compatibleTx } = tx;
+        return await supabase.from('transactions').upsert(compatibleTx);
+    }
+    
+    return { error };
+};
 
 export const getUsers = async () => {
   const { data } = await supabase.from('users').select('*').order('createdAt', { ascending: true });
