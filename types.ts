@@ -1,21 +1,25 @@
 
 export enum UserRole {
-  SUPER_ADMIN = 'SUPER_ADMIN', // 老板/超级管理员
-  ADMIN = 'ADMIN',             // 普通管理员
+  SUPER_ADMIN = 'SUPER_ADMIN', // 老板
+  ADMIN = 'ADMIN',             // 员工/技术
+  FINANCE = 'FINANCE',         // 财务
+  MARKETING = 'MARKETING',     // 营销
   CLIENT = 'CLIENT',           // 客户
 }
 
 export enum AppealStatus {
   PENDING = '待处理',
   PROCESSING = '处理中',
-  FOLLOW_UP = '跟进中', // Dynamic date will be added to notes
-  PASSED = '申诉通过',
+  FOLLOW_UP = '跟进中',
+  PASSED_PENDING_DEDUCTION = '申诉通过-待扣费', // 员工提交后的状态
+  PASSED = '申诉通过-已扣费', // 财务审核后的状态
   REJECTED = '申诉驳回',
 }
 
 export enum TransactionType {
   RECHARGE = '充值',
   DEDUCTION = '扣费',
+  COMMISSION = '提成收入', // 营销角色的收入类型
 }
 
 export enum TransactionStatus {
@@ -27,25 +31,26 @@ export enum TransactionStatus {
 export interface User {
   id: string;
   username: string;
-  // password field removed. Passwords are managed by Supabase Auth strictly.
-  phone?: string;    // Added for phone binding UI
+  phone?: string;
   role: UserRole;
   balance: number;
+  marketingCode?: string; // 如果是营销角色，这是他的唯一码
+  referredBy?: string;    // 如果是客户，这是他绑定的营销码
   createdAt: string;
 }
 
 export interface Appeal {
   id: string;
   userId: string;
-  username: string; // Denormalized for easier display
-  accountType: string; // PurpleBird, VPS, etc.
+  username: string;
+  accountType: string;
   loginInfo: string;
   emailAccount: string;
   emailPass: string;
-  description?: string; // New field: Situation description
-  screenshot?: string; // Base64 data
+  description?: string;
+  screenshot?: string;
   status: AppealStatus;
-  statusDetail?: string; // e.g., "12月23日已跟进"
+  statusDetail?: string;
   adminNotes: string;
   deductionAmount: number;
   createdAt: string;
@@ -59,39 +64,32 @@ export interface Transaction {
   type: TransactionType;
   amount: number;
   status: TransactionStatus;
-  note?: string; // e.g. "Recharge for Order 123"
+  appealId?: string; // 关联的工单ID，用于结算提成
+  note?: string;
   createdAt: string;
 }
 
-// System Configuration stored in JSON
 export interface SystemConfig {
-  contactInfo: string; // Admin contact details
-  paymentQrUrl?: string; // Dynamic URL for the QR code
-  
-  // Marketing / Social Proof Configuration
-  marketingBaseCases?: number;       // e.g. 3500 (Base number added to real count)
-  marketingSuccessRate?: string;     // e.g. "98.5" (Displayed if real data is insufficient)
-  marketingBaseProcessing?: number;  // e.g. 15 (Base number added to real queue)
+  contactInfo: string;
+  paymentQrUrl?: string;
+  commissionRate: number; // 全局提成比例，例如 0.2 代表 20%
+  marketingBaseCases?: number;
+  marketingSuccessRate?: string;
+  marketingBaseProcessing?: number;
 }
 
-// --- V2 AI Knowledge Base Types ---
-
-// 重构：按申诉后果分类，而非原因分类
 export enum PoaType {
   ACCOUNT_SUSPENSION = '店铺账户暂停 (Account Suspension)',
   FULFILLMENT_SUSPENSION = '自发货权限暂停 (Fulfillment Suspension)',
   OTHER = '其他问题'
 }
 
-// Mapping relationship for UI
 export const POA_TYPE_MAPPING: Record<PoaType, string[]> = {
   [PoaType.ACCOUNT_SUSPENSION]: [
-    // 绩效问题导致的封店 (长文)
     'OTD (发货及时率低) - 导致封店',
     'VTR (物流追踪率低) - 导致封店',
     '取消率过高 - 导致封店',
     '退款率过高 - 导致封店',
-    // 政策违规导致的封店
     '知识产权 - 商标侵权 (Trademark)',
     '知识产权 - 版权侵权 (Copyright)',
     '知识产权 - 专利侵权 (Patent)',
@@ -104,7 +102,6 @@ export const POA_TYPE_MAPPING: Record<PoaType, string[]> = {
     '其他 - 导致封店'
   ],
   [PoaType.FULFILLMENT_SUSPENSION]: [
-    // 自发货权限暂停 (必须限制 1000 字符)
     'OTD (发货及时率低) - 暂停自发货',
     'VTR (物流追踪率低) - 暂停自发货',
     '取消率过高 - 暂停自发货'
@@ -119,18 +116,10 @@ export const POA_TYPE_MAPPING: Record<PoaType, string[]> = {
 export interface KnowledgeBaseItem {
   id: string;
   type: PoaType;
-  subType: string; // Values from POA_TYPE_MAPPING lists
-  title: string; // e.g., "2024-05 Successful OTD Appeal"
-  content: string; // The full POA text
+  subType: string;
+  title: string;
+  content: string;
   tags?: string[];
   createdAt: string;
-  usageCount: number; // For ranking
+  usageCount: number;
 }
-
-export const INITIAL_ADMIN: User = {
-  id: 'admin-001',
-  username: 'admin',
-  role: UserRole.ADMIN,
-  balance: 0,
-  createdAt: new Date().toISOString(),
-};
