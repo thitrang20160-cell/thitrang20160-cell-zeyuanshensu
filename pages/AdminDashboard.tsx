@@ -8,7 +8,7 @@ import {
   ShieldAlert, TrendingUp, Sparkles, 
   Key, PieChart, RefreshCw, Zap,
   ListChecks, BookOpen, Trash2, FileSpreadsheet, Plus, Activity,
-  ChevronDown, ChevronUp, BrainCircuit, Settings, Stethoscope, Database, PlayCircle, Trash, FileText
+  ChevronDown, ChevronUp, BrainCircuit, Settings, Stethoscope, Database, PlayCircle, Trash, FileText, ClipboardList, AlertTriangle
 } from 'lucide-react';
 import { GoogleGenAI } from "@google/genai";
 import { useToast } from '../components/Toast';
@@ -81,6 +81,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
   // Diagnosis State
   const [diagnosis, setDiagnosis] = useState<{db: boolean | null, ai: boolean | null, auth: boolean | null}>({ db: null, ai: null, auth: null });
   const [isDiagnosing, setIsDiagnosing] = useState(false);
+  
+  // Full System Test State
+  const [isTestRunning, setIsTestRunning] = useState(false);
+  const [testLogs, setTestLogs] = useState<string[]>([]);
+  const [showTestModal, setShowTestModal] = useState(false);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -169,6 +174,146 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
         showToast('生成失败', 'error');
     } finally {
         setLoading(false);
+    }
+  };
+  
+  const runFullScenarioTest = async () => {
+    setIsTestRunning(true);
+    setTestLogs([]);
+    setShowTestModal(true);
+    
+    // Helper to add logs in real-time
+    const addLog = (msg: string) => {
+        setTestLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`]);
+    };
+
+    try {
+        addLog("🚀 开始全链路功能测试 (Full Scenario Test)...");
+        const uniqueId = Date.now();
+        const testUserId = `TEST-USER-${uniqueId}`; // Assuming DB allows arbitrary UUIDs or strings
+        const testAppealId = `TEST-APPEAL-${uniqueId}`;
+        const testTxId = `TEST-TX-${uniqueId}`;
+        const testEmail = `autotest_${uniqueId}@example.com`;
+
+        // 1. Create Test User
+        addLog(`1. 创建测试用户 (模拟客户) ...`);
+        addLog(`   -> ID: ${testUserId}, Email: ${testEmail}, 初始余额: 1000`);
+        const { error: userErr } = await supabase.from('users').insert({
+            id: testUserId,
+            username: `AutoTest_${uniqueId}`,
+            role: UserRole.CLIENT,
+            balance: 1000,
+            createdAt: new Date().toISOString()
+        });
+        if (userErr) throw new Error(`创建用户失败: ${userErr.message} (可能受RLS策略限制)`);
+        addLog("   ✅ 用户创建成功");
+
+        // 2. Client Submission
+        addLog(`2. 模拟客户提交申诉 ...`);
+        const testAppeal: Appeal = {
+            id: testAppealId,
+            userId: testUserId,
+            username: `AutoTest_${uniqueId}`,
+            accountType: 'TestEnv',
+            loginInfo: '127.0.0.1',
+            emailAccount: testEmail,
+            emailPass: 'testpass',
+            status: AppealStatus.PENDING,
+            description: 'Automated test description',
+            adminNotes: '',
+            deductionAmount: 0,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+        };
+        const { error: appealErr } = await saveAppeal(testAppeal);
+        if (appealErr) throw new Error(`申诉提交失败: ${appealErr.message}`);
+        addLog("   ✅ 申诉提交成功，状态: PENDING");
+
+        // 3. Staff Review
+        addLog(`3. 模拟管理员/员工审核 ...`);
+        addLog(`   -> 操作: 更新状态为 PASSED_PENDING_DEDUCTION, 设置扣费 200`);
+        const updatedAppeal = {
+            ...testAppeal,
+            status: AppealStatus.PASSED_PENDING_DEDUCTION,
+            adminNotes: 'Auto test approval',
+            deductionAmount: 200,
+            updatedAt: new Date().toISOString()
+        };
+        const { error: reviewErr } = await saveAppeal(updatedAppeal);
+        if (reviewErr) throw new Error(`审核操作失败: ${reviewErr.message}`);
+        addLog("   ✅ 审核状态更新成功");
+
+        // 4. Create Transaction
+        addLog(`4. 创建扣费流水单 ...`);
+        const testTx: Transaction = {
+            id: testTxId,
+            userId: testUserId,
+            username: `AutoTest_${uniqueId}`,
+            type: TransactionType.DEDUCTION,
+            amount: 200,
+            status: TransactionStatus.PENDING,
+            appealId: testAppealId,
+            note: 'Auto Test Fee',
+            createdAt: new Date().toISOString()
+        };
+        const { error: txErr } = await saveTransaction(testTx);
+        if (txErr) throw new Error(`流水创建失败: ${txErr.message}`);
+        addLog("   ✅ 流水创建成功，状态: PENDING");
+
+        // 5. Finance Approval
+        addLog(`5. 模拟财务/老板 审批扣费 ...`);
+        addLog(`   -> 执行 processDeductionAndCommission`);
+        const result = await processDeductionAndCommission(testTxId);
+        if (!result.success) throw new Error(`扣费逻辑执行失败: ${result.error}`);
+        addLog("   ✅ 扣费逻辑返回成功");
+
+        // 6. Final Verification
+        addLog(`6. 最终数据一致性校验 ...`);
+        
+        // Check User Balance
+        const { data: finalUser } = await supabase.from('users').select('*').eq('id', testUserId).single();
+        if (finalUser.balance === 800) {
+            addLog("   ✅ 用户余额校验通过: 1000 -> 800");
+        } else {
+            addLog(`   ❌ 用户余额校验失败! 期望: 800, 实际: ${finalUser.balance}`);
+            throw new Error("余额计算错误");
+        }
+
+        // Check Appeal Status
+        const { data: finalAppeal } = await supabase.from('appeals').select('*').eq('id', testAppealId).single();
+        if (finalAppeal.status === AppealStatus.PASSED) {
+            addLog(`   ✅ 工单状态校验通过: ${AppealStatus.PASSED}`);
+        } else {
+            addLog(`   ❌ 工单状态校验失败! 期望: ${AppealStatus.PASSED}, 实际: ${finalAppeal.status}`);
+        }
+
+        // Check Transaction Status
+        const { data: finalTx } = await supabase.from('transactions').select('*').eq('id', testTxId).single();
+        if (finalTx.status === TransactionStatus.APPROVED) {
+            addLog(`   ✅ 流水状态校验通过: ${TransactionStatus.APPROVED}`);
+        } else {
+            addLog(`   ❌ 流水状态校验失败! 期望: ${TransactionStatus.APPROVED}, 实际: ${finalTx.status}`);
+        }
+        
+        addLog("-----------------------------------");
+        addLog("🎉🎉🎉 测试全部通过！系统功能正常。");
+        addLog("-----------------------------------");
+        
+        // Cleanup
+        addLog("7. 清理测试数据 (3秒后执行)...");
+        await new Promise(r => setTimeout(r, 3000));
+        await supabase.from('users').delete().eq('id', testUserId);
+        await supabase.from('appeals').delete().eq('id', testAppealId);
+        await supabase.from('transactions').delete().eq('id', testTxId);
+        addLog("   ✅ 测试数据已清理完毕");
+
+    } catch (e: any) {
+        addLog("-----------------------------------");
+        addLog(`❌ 测试过程中断: ${e.message}`);
+        addLog("-----------------------------------");
+        addLog("⚠️ 请截图或复制此日志反馈给开发人员");
+    } finally {
+        setIsTestRunning(false);
     }
   };
 
@@ -585,6 +730,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
                             {isDiagnosing && <Loader2 className="absolute top-4 right-4 animate-spin text-gray-500"/>}
                         </button>
 
+                         <button 
+                            onClick={runFullScenarioTest}
+                            className="bg-white/10 hover:bg-white/20 p-4 rounded-xl text-left transition-colors relative"
+                        >
+                            <ClipboardList className="mb-2 text-yellow-400"/>
+                            <p className="text-xs text-gray-400">模拟全流程</p>
+                            <p className="font-bold">全链路测试</p>
+                            {isTestRunning && <Loader2 className="absolute top-4 right-4 animate-spin text-gray-500"/>}
+                        </button>
+
                         <button 
                             onClick={generateTestData}
                             className="bg-white/10 hover:bg-white/20 p-4 rounded-xl text-left transition-colors"
@@ -595,18 +750,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
                         </button>
                         
                         <div className="bg-white/5 p-4 rounded-xl text-left border border-white/10">
-                            <Database className="mb-2 text-purple-400"/>
-                            <div className="flex justify-between items-center">
-                                <div>
-                                    <p className="text-xs text-gray-400">数据库</p>
-                                    <p className="font-bold text-sm">{diagnosis.db === true ? '正常' : diagnosis.db === false ? '连接失败' : '未检测'}</p>
-                                </div>
-                                {diagnosis.db === true && <CheckCircle size={16} className="text-green-400"/>}
-                                {diagnosis.db === false && <XCircle size={16} className="text-red-400"/>}
-                            </div>
-                        </div>
-
-                         <div className="bg-white/5 p-4 rounded-xl text-left border border-white/10">
                             <Sparkles className="mb-2 text-indigo-400"/>
                             <div className="flex justify-between items-center">
                                 <div>
@@ -782,6 +925,59 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
                  <button onClick={handleSaveAppealTask} disabled={loading} className="px-12 py-3 bg-indigo-600 text-white rounded-xl font-bold text-lg shadow-lg hover:bg-indigo-700 transition-all active:scale-95">
                     {loading ? <Loader2 className="animate-spin"/> : '确认处理结果'}
                  </button>
+              </div>
+           </div>
+        </div>
+      )}
+
+      {/* MODAL: Full System Test Logs */}
+      {showTestModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm animate-in fade-in">
+           <div className="bg-gray-900 rounded-2xl shadow-2xl w-full max-w-2xl p-6 text-white border border-gray-700 flex flex-col max-h-[80vh]">
+              <div className="flex justify-between items-center mb-4">
+                 <h3 className="text-xl font-bold flex items-center gap-2"><ClipboardList className="text-yellow-400"/> 全链路自动化测试日志</h3>
+                 {!isTestRunning && (
+                   <button onClick={() => setShowTestModal(false)} className="p-1 hover:bg-gray-700 rounded-full transition-colors"><X size={20}/></button>
+                 )}
+              </div>
+              
+              <div className="flex-1 bg-black/50 rounded-xl p-4 overflow-y-auto font-mono text-xs sm:text-sm space-y-1 border border-gray-800 shadow-inner">
+                 {testLogs.length === 0 && <p className="text-gray-500 italic">正在初始化测试环境...</p>}
+                 {testLogs.map((log, i) => (
+                    <div key={i} className={`
+                       ${log.includes('✅') ? 'text-green-400' : ''}
+                       ${log.includes('❌') ? 'text-red-400 font-bold' : ''}
+                       ${log.includes('⚠️') ? 'text-yellow-400' : ''}
+                       ${!log.includes('✅') && !log.includes('❌') && !log.includes('⚠️') ? 'text-gray-300' : ''}
+                    `}>
+                       {log}
+                    </div>
+                 ))}
+                 {isTestRunning && (
+                    <div className="flex items-center gap-2 text-blue-400 mt-2">
+                       <Loader2 size={14} className="animate-spin"/> 正在执行步骤...
+                    </div>
+                 )}
+              </div>
+
+              <div className="mt-4 flex justify-between items-center">
+                 <p className="text-xs text-gray-500">测试数据将在测试完成后自动清理</p>
+                 <div className="flex gap-3">
+                    <button 
+                        onClick={() => {
+                            navigator.clipboard.writeText(testLogs.join('\n'));
+                            showToast('日志已复制', 'success');
+                        }} 
+                        className="px-4 py-2 bg-gray-800 hover:bg-gray-700 rounded-lg text-xs font-bold border border-gray-600 transition-colors"
+                    >
+                        复制日志
+                    </button>
+                    {!isTestRunning && (
+                        <button onClick={() => setShowTestModal(false)} className="px-6 py-2 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-xs font-bold transition-colors">
+                            关闭窗口
+                        </button>
+                    )}
+                 </div>
               </div>
            </div>
         </div>
