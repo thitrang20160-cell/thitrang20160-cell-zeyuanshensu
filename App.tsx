@@ -14,7 +14,7 @@ const App: React.FC = () => {
   const [initLoading, setInitLoading] = useState(true);
 
   useEffect(() => {
-    // 1. Initial Load
+    // 1. 初始化加载
     const initAuth = async () => {
       try {
         const user = await getCurrentUserProfile();
@@ -22,12 +22,13 @@ const App: React.FC = () => {
       } catch (e) {
         console.error("Auth init error", e);
       } finally {
+        // 无论成功失败，必须结束加载状态
         setInitLoading(false);
       }
     };
     initAuth();
 
-    // 2. Auth State Listener
+    // 2. 监听登录状态变化
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (event === 'SIGNED_IN' && session) {
         const user = await getCurrentUserProfile();
@@ -46,12 +47,12 @@ const App: React.FC = () => {
 
   const handleLogout = async () => {
     try {
-      await signOut(); // This clears Supabase session AND LocalStorage
+      await signOut(); // 清除 Supabase 会话和本地存储
     } catch (err) {
       console.error("Logout failed", err);
     } finally {
-      // CRITICAL FIX: Force a hard browser redirect to clear all React state and memory
-      // This prevents the "White Screen" hang by resetting the app completely.
+      // 【核心修复】: 强制浏览器重定向到根路径
+      // 这会强制刷新页面，清除所有 React 内存状态，防止白屏死循环
       window.location.href = '/'; 
     }
   };
@@ -71,7 +72,7 @@ const App: React.FC = () => {
     );
   }
 
-  // Routing Logic: Non-Client roles go to AdminDashboard
+  // 路由逻辑: 非客户角色进入管理端
   const isManagementRole = currentUser && currentUser.role !== UserRole.CLIENT;
 
   return (
