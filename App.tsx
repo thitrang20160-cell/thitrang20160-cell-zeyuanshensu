@@ -44,10 +44,8 @@ const App: React.FC = () => {
     try {
       await signOut();
       setCurrentUser(null);
-      // 彻底清空本地缓存并强制刷新到首页，解决登录状态残留导致的转圈问题
-      window.localStorage.clear();
-      window.sessionStorage.clear();
-      window.location.replace('/');
+      // 强制刷新，防止 React 状态残留导致二次登录异常
+      window.location.href = "/"; 
     } catch (err) {
       console.error("Logout failed", err);
       window.location.reload();
@@ -69,6 +67,7 @@ const App: React.FC = () => {
     );
   }
 
+  // 只要不是普通 CLIENT 客户，都进入 AdminDashboard，由 AdminDashboard 内部进行权限分流
   const isManagementRole = currentUser && currentUser.role !== UserRole.CLIENT;
 
   return (

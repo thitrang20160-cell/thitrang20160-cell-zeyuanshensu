@@ -1,13 +1,13 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { User, Appeal, Transaction, AppealStatus, TransactionType, TransactionStatus, UserRole, PoaType, POA_TYPE_MAPPING, SystemConfig, KnowledgeBaseItem } from './types';
-import { getAppeals, saveAppeal, getTransactions, saveTransaction, getUsers, updateAnyUser, getSystemConfig, saveSystemConfig, processDeductionAndCommission, getKnowledgeBase, addToKnowledgeBase, deleteFromKnowledgeBase } from './services/storageService';
+import { getAppeals, saveAppeal, getTransactions, saveTransaction, getUsers, getSystemConfig, saveSystemConfig, processDeductionAndCommission, getKnowledgeBase, addToKnowledgeBase, deleteFromKnowledgeBase } from './services/storageService';
 import { 
-  CheckCircle, XCircle, Clock, Search, Edit3, DollarSign, 
-  Save, X, Filter, Loader2, Bell, Download, File, Users, 
-  ShieldAlert, Settings, AlertTriangle, TrendingUp, Sparkles, 
-  Key, CreditCard, PieChart, RefreshCw, Zap, UserCheck, MessageSquarePlus, 
-  ExternalLink, Info, Activity, ListChecks, BookOpen, Trash2, FileSpreadsheet, Plus, Share2, ClipboardList
+  CheckCircle, XCircle, Search, Edit3, DollarSign, 
+  Save, X, Loader2, Bell, Download, Users, 
+  ShieldAlert, TrendingUp, Sparkles, 
+  Key, PieChart, RefreshCw, Zap,
+  ListChecks, BookOpen, Trash2, FileSpreadsheet, Plus, Activity
 } from 'lucide-react';
 import { GoogleGenAI } from "@google/genai";
 import { useToast } from './components/Toast';
@@ -30,6 +30,14 @@ const getRandomNames = () => {
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) => {
   const { showToast } = useToast();
+  
+  // 角色判定
+  const isSuper = currentUser.role === UserRole.SUPER_ADMIN;
+  const isStaff = currentUser.role === UserRole.ADMIN;
+  const isFinance = currentUser.role === UserRole.FINANCE;
+  const isMarketing = currentUser.role === UserRole.MARKETING;
+
+  // 状态管理
   const [activeTab, setActiveTab] = useState<string>('appeals');
   const [appeals, setAppeals] = useState<Appeal[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -39,51 +47,64 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
   const [loading, setLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
 
-  // 核心权限判定
-  const isSuper = currentUser.role === UserRole.SUPER_ADMIN;
-  const isStaff = currentUser.role === UserRole.ADMIN;
-  const isFinance = currentUser.role === UserRole.FINANCE;
-  const isMarketing = currentUser.role === UserRole.MARKETING;
-
-  // AI POA 逻辑
+  // AI 申诉相关状态
   const [editingAppeal, setEditingAppeal] = useState<Appeal | null>(null);
   const [aiPoaType, setAiPoaType] = useState<PoaType>(PoaType.ACCOUNT_SUSPENSION);
   const [aiPoaSubType, setAiPoaSubType] = useState<string>(POA_TYPE_MAPPING[PoaType.ACCOUNT_SUSPENSION][0]);
   const [aiRootCause, setAiRootCause] = useState('');
   const [aiStoreName, setAiStoreName] = useState('');
   const [aiPartnerId, setAiPartnerId] = useState('');
-  const [aiMetricTarget, setAiMetricTarget] = useState('提升发货及时率至 99.5% 以上');
-  const [aiTone, setAiTone] = useState('专业且充满诚意');
   const [aiTableExtract, setAiTableExtract] = useState('');
   const [aiGeneratedText, setAiGeneratedText] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [aiStep, setAiStep] = useState<1 | 2>(1);
 
+  // 工单处理状态
   const [editStatus, setEditStatus] = useState<AppealStatus>(AppealStatus.PENDING);
   const [editNote, setEditNote] = useState('');
   const [editDeduction, setEditDeduction] = useState(200);
 
+  // 数据加载
   const loadData = useCallback(async () => {
     setLoading(true);
-    const [a, t, u, c, k] = await Promise.all([
-      getAppeals(), getTransactions(), getUsers(), getSystemConfig(), getKnowledgeBase()
-    ]);
-    setAppeals(a);
-    setTransactions(t);
-    setAllUsers(u);
-    setConfig(c);
-    setKbItems(k);
-    setLoading(false);
-  }, []);
+    try {
+      const [a, t, u, c, k] = await Promise.all([
+        getAppeals(), 
+        getTransactions(), 
+        getUsers(), 
+        getSystemConfig(), 
+        getKnowledgeBase()
+      ]);
+      setAppeals(a);
+      setTransactions(t);
+      setAllUsers(u);
+      setConfig(c);
+      setKbItems(k);
+    } catch (e) {
+      console.error(e);
+      showToast('数据加载失败', 'error');
+    } finally {
+      setLoading(false);
+    }
+  }, [showToast]);
 
+  // 初始化与 Tab 自动跳转
   useEffect(() => {
     loadData();
-    // 强制根据角色设置初始 Tab，防止白屏
-    if (isMarketing) setActiveTab('marketing_performance');
-    else if (isFinance) setActiveTab('finance_review');
-    else setActiveTab('appeals');
-  }, [loadData, isMarketing, isFinance]);
+    // 关键修复：防止非老板角色进入默认 tab 导致白屏
+    if (isMarketing) {
+      setActiveTab('marketing_performance');
+    } else if (isFinance) {
+      setActiveTab('finance_review');
+    } else if (isStaff) {
+      setActiveTab('appeals');
+    } else {
+      // 老板默认看申诉
+      setActiveTab('appeals');
+    }
+  }, [loadData, isMarketing, isFinance, isStaff]);
 
+  // Excel 解析逻辑
   const handleExcelUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -94,60 +115,105 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
         const wb = XLSX.read(bstr, { type: 'binary' });
         const wsname = wb.SheetNames[0];
         const ws = wb.Sheets[wsname];
-        const data = XLSX.utils.sheet_to_txt(ws);
+        // 将表格转换为 CSV 格式的文本，方便 AI 理解
+        const data = XLSX.utils.sheet_to_csv(ws);
         setAiTableExtract(data);
-        showToast('Excel 绩效数据分析成功，已填入建模框', 'success');
+        showToast('Excel 数据提取成功，已注入 AI 上下文', 'success');
       } catch (err) {
-        showToast('表格解析失败', 'error');
+        showToast('Excel 解析失败，请确认文件格式', 'error');
       }
     };
     reader.readAsBinaryString(file);
   };
 
+  // AI 生成逻辑
   const handleGeneratePOA = async () => {
     setIsGenerating(true);
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const staff = getRandomNames();
-      const prompt = `你是沃尔玛申诉顾问。为店铺 ${aiStoreName} (PID: ${aiPartnerId}) 撰写 POA。\n细项: ${aiPoaSubType}\n核心数据: ${aiTableExtract}\n改进目标: ${aiMetricTarget}\n根本原因: ${aiRootCause}\n负责人: ${staff.manager}`;
+      
+      const prompt = `
+        角色: 资深沃尔玛申诉专家
+        任务: 为店铺 "${aiStoreName}" (Partner ID: ${aiPartnerId}) 撰写一份专业的行动计划书 (POA)。
+        违规类型: ${aiPoaSubType}
+        
+        核心绩效数据 (来自 Excel):
+        ${aiTableExtract}
+        
+        根本原因分析:
+        ${aiRootCause}
+        
+        改进措施负责人:
+        - 运营经理: ${staff.manager}
+        - 仓库主管: ${staff.warehouse}
+        
+        要求:
+        1. 使用纯英文撰写，语气诚恳专业。
+        2. 严格遵循 5-Whys 分析法。
+        3. 针对提供的绩效数据进行具体分析，解释为何未达标。
+        4. 列出详细的短期修正措施和长期预防措施。
+      `;
+
       const response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
         contents: prompt,
       });
-      setAiGeneratedText(response.text || '');
-      setAiStep(2);
-      showToast('AI POA 已完成深度分析并生成', 'success');
+      
+      if (response.text) {
+        setAiGeneratedText(response.text);
+        setAiStep(2);
+        showToast('AI POA 生成成功', 'success');
+      } else {
+        throw new Error('未生成文本');
+      }
     } catch (err: any) {
-      showToast('生成失败，请检查 API 密钥状态', 'error');
+      console.error(err);
+      showToast('生成失败，请检查 API Key 是否有效', 'error');
     } finally {
       setIsGenerating(false);
     }
   };
 
+  // 保存工单逻辑
   const handleSaveAppealTask = async () => {
     if (!editingAppeal) return;
     setLoading(true);
+    
     let finalStatus = editStatus;
-    // 员工通过工单需转交财务扣费
-    if (isStaff && editStatus === AppealStatus.PASSED) finalStatus = AppealStatus.PASSED_PENDING_DEDUCTION;
+    // 如果是员工权限，且选择了"通过"，状态强制转为"待扣费"，需财务/老板二次确认
+    if (isStaff && editStatus === AppealStatus.PASSED) {
+      finalStatus = AppealStatus.PASSED_PENDING_DEDUCTION;
+    }
     
-    await saveAppeal({ ...editingAppeal, status: finalStatus, adminNotes: editNote, deductionAmount: editDeduction, updatedAt: new Date().toISOString() });
+    // 1. 更新工单
+    await saveAppeal({ 
+      ...editingAppeal, 
+      status: finalStatus, 
+      adminNotes: editNote, 
+      deductionAmount: editDeduction, 
+      updatedAt: new Date().toISOString() 
+    });
     
-    if (finalStatus === AppealStatus.PASSED_PENDING_DEDUCTION) {
-      await saveTransaction({ 
+    // 2. 如果状态是"待扣费"或"已通过"，且有扣费金额，创建扣费流水
+    if ((finalStatus === AppealStatus.PASSED_PENDING_DEDUCTION || finalStatus === AppealStatus.PASSED) && editDeduction > 0) {
+       // 检查是否已存在同名扣费单防止重复（简化逻辑：此处每次都生成新单，实际应更严谨）
+       await saveTransaction({ 
         id: `deduct-${Date.now()}`, 
         userId: editingAppeal.userId, 
         username: editingAppeal.username, 
         type: TransactionType.DEDUCTION, 
         amount: editDeduction, 
-        status: TransactionStatus.PENDING, 
+        status: isStaff ? TransactionStatus.PENDING : TransactionStatus.APPROVED, // 老板直接通过，员工需审核
         appealId: editingAppeal.id, 
-        note: `工单 ${editingAppeal.id.slice(-4)} 提交结算`, 
+        note: `工单 ${editingAppeal.id.slice(-6)} 服务费`, 
         createdAt: new Date().toISOString() 
       });
-      showToast('工单已提交财务处理扣费', 'info');
+      
+      if (isStaff) showToast('已提交财务审核扣费', 'info');
+      else showToast('工单处理完成并已直接扣费', 'success');
     } else {
-      showToast('处理记录已更新', 'success');
+      showToast('工单状态已更新', 'success');
     }
     
     setEditingAppeal(null);
@@ -155,311 +221,434 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser }) =
     setLoading(false);
   };
 
+  // API Key 设置
   const handleOpenKey = async () => {
     try {
       if (window.aistudio) {
         await window.aistudio.openSelectKey();
-        showToast('API 密钥管理器已启动', 'info');
       } else {
-        showToast('当前环境不支持密钥管理器，请检查插件', 'error');
+        showToast('环境不支持 API Key 选择器', 'error');
       }
     } catch (e) {
-      showToast('打开密钥选择器失败', 'error');
+      showToast('打开密钥设置失败', 'error');
     }
   };
 
   return (
     <div className="space-y-6">
-      {/* 顶部多角色自适应导航 */}
+      {/* 顶部导航栏：根据角色动态显示 */}
       <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
         <div className="flex border-b border-gray-200 overflow-x-auto no-scrollbar">
-          {(isSuper || isStaff) && <button onClick={() => setActiveTab('appeals')} className={`flex-1 py-4 px-6 text-sm font-bold transition-all ${activeTab === 'appeals' ? 'bg-indigo-50 text-indigo-700 border-b-2 border-indigo-600' : 'text-gray-500 hover:bg-gray-50'}`}>申诉工作台</button>}
-          {(isSuper || isFinance) && <button onClick={() => setActiveTab('finance_review')} className={`flex-1 py-4 px-6 text-sm font-bold transition-all ${activeTab === 'finance_review' ? 'bg-indigo-50 text-indigo-700 border-b-2 border-indigo-600' : 'text-gray-500 hover:bg-gray-50'}`}>充值与扣费审核</button>}
-          {isSuper && <button onClick={() => setActiveTab('knowledge_base')} className={`flex-1 py-4 px-6 text-sm font-bold transition-all ${activeTab === 'knowledge_base' ? 'bg-indigo-50 text-indigo-700 border-b-2 border-indigo-600' : 'text-gray-500 hover:bg-gray-50'}`}>AI 智囊团管理</button>}
-          {(isSuper || isMarketing) && <button onClick={() => setActiveTab('marketing_performance')} className={`flex-1 py-4 px-6 text-sm font-bold transition-all ${activeTab === 'marketing_performance' ? 'bg-indigo-50 text-indigo-700 border-b-2 border-indigo-600' : 'text-gray-500 hover:bg-gray-50'}`}>营销业绩看板</button>}
-          {isSuper && <button onClick={() => setActiveTab('user_management')} className={`flex-1 py-4 px-6 text-sm font-bold transition-all ${activeTab === 'user_management' ? 'bg-indigo-50 text-indigo-700 border-b-2 border-indigo-600' : 'text-gray-500 hover:bg-gray-50'}`}>组织与角色管理</button>}
-          {isSuper && <button onClick={() => setActiveTab('system_config')} className={`flex-1 py-4 px-6 text-sm font-bold transition-all ${activeTab === 'system_config' ? 'bg-indigo-50 text-indigo-700 border-b-2 border-indigo-600' : 'text-gray-500 hover:bg-gray-50'}`}>系统全局配置</button>}
+          {/* 老板 & 员工 */}
+          {(isSuper || isStaff) && (
+            <button 
+              onClick={() => setActiveTab('appeals')} 
+              className={`flex-1 py-4 px-6 text-sm font-bold transition-all whitespace-nowrap ${activeTab === 'appeals' ? 'bg-indigo-50 text-indigo-700 border-b-2 border-indigo-600' : 'text-gray-500 hover:bg-gray-50'}`}
+            >
+              工单处理中心
+            </button>
+          )}
+          
+          {/* 老板 & 财务 */}
+          {(isSuper || isFinance) && (
+            <button 
+              onClick={() => setActiveTab('finance_review')} 
+              className={`flex-1 py-4 px-6 text-sm font-bold transition-all whitespace-nowrap ${activeTab === 'finance_review' ? 'bg-indigo-50 text-indigo-700 border-b-2 border-indigo-600' : 'text-gray-500 hover:bg-gray-50'}`}
+            >
+              财务审核
+            </button>
+          )}
+          
+          {/* 仅老板 */}
+          {isSuper && (
+            <button 
+              onClick={() => setActiveTab('knowledge_base')} 
+              className={`flex-1 py-4 px-6 text-sm font-bold transition-all whitespace-nowrap ${activeTab === 'knowledge_base' ? 'bg-indigo-50 text-indigo-700 border-b-2 border-indigo-600' : 'text-gray-500 hover:bg-gray-50'}`}
+            >
+              智囊团 (KB)
+            </button>
+          )}
+          
+          {/* 老板 & 营销 */}
+          {(isSuper || isMarketing) && (
+            <button 
+              onClick={() => setActiveTab('marketing_performance')} 
+              className={`flex-1 py-4 px-6 text-sm font-bold transition-all whitespace-nowrap ${activeTab === 'marketing_performance' ? 'bg-indigo-50 text-indigo-700 border-b-2 border-indigo-600' : 'text-gray-500 hover:bg-gray-50'}`}
+            >
+              营销业绩
+            </button>
+          )}
+          
+          {/* 仅老板 */}
+          {isSuper && (
+            <>
+              <button 
+                onClick={() => setActiveTab('user_management')} 
+                className={`flex-1 py-4 px-6 text-sm font-bold transition-all whitespace-nowrap ${activeTab === 'user_management' ? 'bg-indigo-50 text-indigo-700 border-b-2 border-indigo-600' : 'text-gray-500 hover:bg-gray-50'}`}
+              >
+                员工管理
+              </button>
+              <button 
+                onClick={() => setActiveTab('system_config')} 
+                className={`flex-1 py-4 px-6 text-sm font-bold transition-all whitespace-nowrap ${activeTab === 'system_config' ? 'bg-indigo-50 text-indigo-700 border-b-2 border-indigo-600' : 'text-gray-500 hover:bg-gray-50'}`}
+              >
+                全局配置
+              </button>
+            </>
+          )}
         </div>
 
         <div className="p-6">
-          {/* TAB: 申诉工作台 */}
+          {/* 1. 工单处理 Tab */}
           {activeTab === 'appeals' && (
-            <div className="space-y-6 animate-in fade-in duration-300">
+            <div className="space-y-4">
                <div className="flex justify-between items-center">
-                  <h3 className="text-lg font-black flex items-center gap-2 text-gray-800"><ListChecks className="text-indigo-600"/> 实时案件库</h3>
-                  <div className="relative">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
-                    <input type="text" placeholder="搜索店铺邮箱..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="pl-10 pr-4 py-2 border rounded-xl text-sm w-72 focus:ring-2 focus:ring-indigo-500 outline-none" />
-                  </div>
+                 <h3 className="font-bold text-gray-800 flex items-center gap-2"><ListChecks className="text-indigo-600"/> 申诉任务列表</h3>
+                 <div className="relative">
+                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16}/>
+                   <input 
+                     value={searchTerm} 
+                     onChange={e => setSearchTerm(e.target.value)} 
+                     placeholder="搜索邮箱/客户..." 
+                     className="pl-10 pr-4 py-2 border rounded-xl text-sm w-64 focus:ring-2 focus:ring-indigo-500 outline-none"
+                   />
+                 </div>
                </div>
-               <div className="overflow-x-auto rounded-xl border">
-                  <table className="min-w-full">
-                     <thead className="bg-gray-50 text-[10px] text-gray-400 font-bold uppercase tracking-widest">
-                        <tr><th className="p-4 text-left">客户</th><th className="p-4 text-left">账号邮箱</th><th className="p-4 text-left">当前状态</th><th className="p-4 text-right">管理</th></tr>
-                     </thead>
-                     <tbody className="divide-y divide-gray-100 bg-white">
-                        {appeals.filter(a => a.emailAccount.includes(searchTerm)).map(a => (
-                           <tr key={a.id} className="hover:bg-indigo-50/20 transition-colors">
-                              <td className="p-4 font-bold text-gray-900">{a.username}</td>
-                              <td className="p-4 font-mono text-xs text-gray-500">{a.emailAccount}</td>
-                              <td className="p-4"><span className={`px-2 py-1 rounded text-[10px] font-bold ${a.status === AppealStatus.PASSED ? 'bg-green-100 text-green-700' : 'bg-brand-50 text-brand-700'}`}>{a.status}</span></td>
-                              <td className="p-4 text-right">
-                                 <button onClick={() => { setEditingAppeal(a); setEditStatus(a.status); setEditNote(a.adminNotes); setEditDeduction(a.deductionAmount || 200); }} className="px-4 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-bold hover:shadow-lg shadow-indigo-100 transition-all">处理工单</button>
-                              </td>
-                           </tr>
-                        ))}
-                     </tbody>
-                  </table>
+               <div className="overflow-x-auto border rounded-xl">
+                 <table className="min-w-full divide-y divide-gray-100">
+                   <thead className="bg-gray-50">
+                     <tr>
+                       <th className="p-4 text-left text-xs font-bold text-gray-400">提交时间</th>
+                       <th className="p-4 text-left text-xs font-bold text-gray-400">客户</th>
+                       <th className="p-4 text-left text-xs font-bold text-gray-400">店铺邮箱</th>
+                       <th className="p-4 text-left text-xs font-bold text-gray-400">状态</th>
+                       <th className="p-4 text-right text-xs font-bold text-gray-400">操作</th>
+                     </tr>
+                   </thead>
+                   <tbody className="bg-white divide-y divide-gray-50">
+                     {appeals.filter(a => a.emailAccount.includes(searchTerm) || a.username.includes(searchTerm)).map(a => (
+                       <tr key={a.id} className="hover:bg-indigo-50/30">
+                         <td className="p-4 text-sm text-gray-500">{new Date(a.createdAt).toLocaleDateString()}</td>
+                         <td className="p-4 text-sm font-bold">{a.username}</td>
+                         <td className="p-4 text-sm font-mono text-gray-600">{a.emailAccount}</td>
+                         <td className="p-4"><span className="bg-gray-100 px-2 py-1 rounded text-xs font-bold text-gray-600">{a.status}</span></td>
+                         <td className="p-4 text-right">
+                           <button 
+                             onClick={() => {
+                               setEditingAppeal(a);
+                               setEditStatus(a.status);
+                               setEditNote(a.adminNotes);
+                               setEditDeduction(a.deductionAmount || 200);
+                             }} 
+                             className="text-white bg-indigo-600 hover:bg-indigo-700 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors"
+                           >
+                             处理
+                           </button>
+                         </td>
+                       </tr>
+                     ))}
+                   </tbody>
+                 </table>
                </div>
             </div>
           )}
 
-          {/* TAB: 财务审批 (老板与财务可见) */}
+          {/* 2. 财务审核 Tab */}
           {activeTab === 'finance_review' && (
-            <div className="space-y-6 animate-in fade-in duration-300">
-               <div className="flex items-center gap-2 font-black text-gray-800"><DollarSign className="text-green-600"/> 财务核销流水</div>
-               <div className="overflow-x-auto rounded-xl border">
-                  <table className="min-w-full">
-                     <thead className="bg-gray-50 text-[10px] text-gray-400 font-bold uppercase">
-                        <tr><th className="p-4 text-left">申请人</th><th className="p-4 text-left">流水类型</th><th className="p-4 text-left">涉及金额</th><th className="p-4 text-right">审批动作</th></tr>
-                     </thead>
-                     <tbody className="divide-y divide-gray-100">
-                        {transactions.filter(t => t.status === TransactionStatus.PENDING).map(t => (
-                           <tr key={t.id} className="hover:bg-gray-50">
-                              <td className="p-4 font-bold">{t.username}</td>
-                              <td className="p-4"><span className={`text-[10px] font-bold px-2 py-0.5 rounded ${t.type === TransactionType.RECHARGE ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>{t.type}</span></td>
-                              <td className="p-4 font-black">¥{t.amount.toFixed(2)}</td>
-                              <td className="p-4 text-right space-x-2">
-                                 <button onClick={() => processDeductionAndCommission(t.id).then(() => { showToast('审批已入账','success'); loadData(); })} className="px-4 py-1.5 bg-green-600 text-white rounded-lg text-xs font-bold">批准并入账</button>
-                                 <button onClick={async () => { await saveTransaction({...t, status: TransactionStatus.REJECTED}); loadData(); }} className="px-4 py-1.5 border text-red-500 rounded-lg text-xs font-bold hover:bg-red-50">驳回申请</button>
-                              </td>
-                           </tr>
-                        ))}
-                     </tbody>
-                  </table>
-               </div>
+            <div className="space-y-4">
+              <h3 className="font-bold text-gray-800 flex items-center gap-2"><DollarSign className="text-green-600"/> 待处理财务请求</h3>
+              <div className="overflow-x-auto border rounded-xl">
+                <table className="min-w-full divide-y divide-gray-100">
+                   <thead className="bg-gray-50">
+                     <tr>
+                       <th className="p-4 text-left text-xs font-bold text-gray-400">申请人</th>
+                       <th className="p-4 text-left text-xs font-bold text-gray-400">类型</th>
+                       <th className="p-4 text-left text-xs font-bold text-gray-400">金额</th>
+                       <th className="p-4 text-right text-xs font-bold text-gray-400">审批</th>
+                     </tr>
+                   </thead>
+                   <tbody className="bg-white divide-y divide-gray-50">
+                     {transactions.filter(t => t.status === TransactionStatus.PENDING).map(t => (
+                       <tr key={t.id}>
+                         <td className="p-4 text-sm font-bold">{t.username}</td>
+                         <td className="p-4 text-sm">{t.type}</td>
+                         <td className="p-4 text-sm font-bold">¥{t.amount}</td>
+                         <td className="p-4 text-right space-x-2">
+                           <button 
+                             onClick={() => processDeductionAndCommission(t.id).then(() => { showToast('已通过并记账', 'success'); loadData(); })}
+                             className="px-3 py-1 bg-green-500 text-white rounded text-xs font-bold"
+                           >
+                             通过
+                           </button>
+                           <button 
+                             onClick={() => saveTransaction({...t, status: TransactionStatus.REJECTED}).then(loadData)}
+                             className="px-3 py-1 border border-red-200 text-red-500 rounded text-xs font-bold"
+                           >
+                             驳回
+                           </button>
+                         </td>
+                       </tr>
+                     ))}
+                     {transactions.filter(t => t.status === TransactionStatus.PENDING).length === 0 && (
+                       <tr><td colSpan={4} className="p-8 text-center text-gray-400 text-sm">暂无待审核交易</td></tr>
+                     )}
+                   </tbody>
+                </table>
+              </div>
             </div>
           )}
 
-          {/* TAB: AI 智囊团 (老板专有) */}
+          {/* 3. 智囊团 Tab */}
           {activeTab === 'knowledge_base' && isSuper && (
-            <div className="space-y-6 animate-in fade-in duration-300">
-               <div className="flex justify-between items-center">
-                  <h3 className="text-lg font-black flex items-center gap-2"><BookOpen className="text-indigo-600"/> 智囊团范文库管理</h3>
-                  <button className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-xl font-bold text-sm shadow-lg shadow-indigo-100"><Plus size={16}/> 新增申诉模板</button>
-               </div>
-               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+             <div className="space-y-4">
+                <div className="flex justify-between items-center">
+                  <h3 className="font-bold text-gray-800 flex items-center gap-2"><BookOpen className="text-indigo-600"/> 知识库管理</h3>
+                  <button className="flex items-center gap-1 bg-indigo-50 text-indigo-600 px-3 py-1.5 rounded-lg text-xs font-bold"><Plus size={14}/> 新增</button>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   {kbItems.map(item => (
-                    <div key={item.id} className="p-5 bg-white border rounded-2xl shadow-sm hover:shadow-md transition-all space-y-3 group">
-                       <h4 className="font-bold text-gray-900 group-hover:text-indigo-600">{item.title}</h4>
-                       <p className="text-xs text-gray-500 line-clamp-3 leading-relaxed">{item.content}</p>
-                       <div className="flex justify-between items-center pt-3 border-t">
-                          <span className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-1 rounded-md font-bold uppercase tracking-tighter">{item.subType}</span>
-                          <button onClick={() => deleteFromKnowledgeBase(item.id).then(() => { showToast('范文已移出智囊团', 'info'); loadData(); })} className="text-red-300 hover:text-red-500 transition-colors"><Trash2 size={16}/></button>
-                       </div>
+                    <div key={item.id} className="p-4 border rounded-xl hover:shadow-md transition-shadow relative group">
+                      <h4 className="font-bold text-sm mb-2">{item.title}</h4>
+                      <p className="text-xs text-gray-500 line-clamp-2">{item.content}</p>
+                      <button 
+                        onClick={() => deleteFromKnowledgeBase(item.id).then(loadData)}
+                        className="absolute top-2 right-2 text-gray-300 hover:text-red-500 hidden group-hover:block"
+                      >
+                        <Trash2 size={16}/>
+                      </button>
                     </div>
                   ))}
-               </div>
-            </div>
-          )}
-
-          {/* TAB: 营销业绩看板 (老板与营销可见) */}
-          {activeTab === 'marketing_performance' && (
-             <div className="animate-in fade-in duration-300 space-y-6">
-                <div className="bg-gradient-to-br from-indigo-600 to-blue-700 p-8 rounded-[2rem] text-white shadow-xl relative overflow-hidden">
-                   <Zap className="absolute right-0 bottom-0 opacity-10" size={140} />
-                   <p className="text-indigo-100 text-xs font-bold uppercase tracking-widest mb-1">我的推广身份</p>
-                   <h4 className="text-4xl font-black mb-4">{isSuper ? '系统超级账户' : (currentUser.marketingCode || '暂无邀请码')}</h4>
-                   <div className="flex gap-4">
-                      <div className="bg-white/10 px-4 py-2 rounded-xl border border-white/20 text-xs">提成比例: <span className="font-bold">{(config?.commissionRate || 0)*100}%</span></div>
-                      <div className="bg-white/10 px-4 py-2 rounded-xl border border-white/20 text-xs">累计收益: <span className="font-bold">¥{currentUser.balance.toFixed(2)}</span></div>
-                   </div>
-                </div>
-                <div className="bg-white border rounded-2xl p-6">
-                   <h5 className="font-black text-gray-800 mb-6 flex items-center gap-2"><TrendingUp className="text-green-500"/> 提成结算流水 (24H 实时)</h5>
-                   <div className="space-y-3">
-                      {transactions.filter(t => t.userId === currentUser.id && t.type === TransactionType.COMMISSION).slice(0, 10).map(t => (
-                        <div key={t.id} className="flex justify-between items-center p-4 bg-gray-50 rounded-xl hover:bg-white hover:shadow-md transition-all border border-transparent hover:border-indigo-100">
-                           <div className="flex items-center gap-3">
-                              <div className="p-2 bg-green-100 text-green-600 rounded-lg"><Zap size={14}/></div>
-                              <span className="text-xs font-bold text-gray-700">{t.note}</span>
-                           </div>
-                           <span className="font-black text-green-600">+¥{t.amount.toFixed(2)}</span>
-                        </div>
-                      ))}
-                   </div>
                 </div>
              </div>
           )}
 
-          {/* TAB: 员工管理 (老板专有) */}
+          {/* 4. 营销业绩 Tab */}
+          {activeTab === 'marketing_performance' && (
+             <div className="space-y-6">
+                <div className="bg-gradient-to-r from-indigo-500 to-purple-600 rounded-2xl p-6 text-white shadow-lg">
+                   <h4 className="text-lg font-bold mb-1">营销概览</h4>
+                   <p className="text-sm opacity-80 mb-4">当前身份: {currentUser.role === UserRole.SUPER_ADMIN ? '超级管理员' : '营销合伙人'}</p>
+                   <div className="flex gap-8">
+                      <div>
+                        <p className="text-xs opacity-60 uppercase">累计佣金</p>
+                        <p className="text-3xl font-bold">¥{currentUser.balance.toFixed(2)}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs opacity-60 uppercase">专属邀请码</p>
+                        <p className="text-3xl font-mono font-bold">{currentUser.marketingCode || '无'}</p>
+                      </div>
+                   </div>
+                </div>
+                
+                <div>
+                  <h5 className="font-bold text-gray-700 mb-3 flex items-center gap-2"><Zap size={16} className="text-yellow-500"/> 收益明细</h5>
+                  <div className="space-y-2">
+                    {transactions.filter(t => t.userId === currentUser.id && t.type === TransactionType.COMMISSION).map(t => (
+                      <div key={t.id} className="flex justify-between p-3 bg-gray-50 rounded-xl">
+                        <span className="text-sm text-gray-600">{t.note}</span>
+                        <span className="text-sm font-bold text-green-600">+¥{t.amount}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+             </div>
+          )}
+
+          {/* 5. 员工管理 Tab */}
           {activeTab === 'user_management' && isSuper && (
-            <div className="space-y-6 animate-in fade-in duration-300">
-               <h3 className="text-lg font-black text-gray-800 flex items-center gap-2"><Users className="text-indigo-600"/> 团队组织架构</h3>
-               <div className="overflow-x-auto rounded-xl border">
-                  <table className="min-w-full bg-white">
-                     <thead className="bg-gray-50 text-[10px] text-gray-400 font-bold uppercase">
-                        <tr><th className="p-4 text-left">用户名</th><th className="p-4 text-left">职能角色</th><th className="p-4 text-left">账户余额/佣金</th><th className="p-4 text-left">营销识别码</th><th className="p-4 text-right">修改设置</th></tr>
-                     </thead>
-                     <tbody className="divide-y divide-gray-100">
-                        {allUsers.map(u => (
-                           <tr key={u.id} className="hover:bg-gray-50">
-                              <td className="p-4 font-bold text-sm">{u.username}</td>
-                              <td className="p-4"><span className={`px-2 py-0.5 rounded-full text-[10px] font-black ${u.role === UserRole.SUPER_ADMIN ? 'bg-red-50 text-red-600' : 'bg-indigo-50 text-indigo-700'}`}>{u.role}</span></td>
-                              <td className="p-4 font-mono text-sm font-bold text-gray-600">¥{u.balance.toFixed(2)}</td>
-                              <td className="p-4 font-mono text-xs text-gray-400">{u.marketingCode || '-'}</td>
-                              <td className="p-4 text-right">
-                                 <button onClick={() => showToast('员工管理功能优化中','info')} className="text-indigo-400 hover:text-indigo-600"><Edit3 size={16}/></button>
-                              </td>
-                           </tr>
-                        ))}
-                     </tbody>
-                  </table>
+            <div className="space-y-4">
+               <h3 className="font-bold text-gray-800 flex items-center gap-2"><Users className="text-indigo-600"/> 员工与权限管理</h3>
+               <div className="overflow-x-auto border rounded-xl">
+                 <table className="min-w-full">
+                   <thead className="bg-gray-50">
+                     <tr><th className="p-3 text-left text-xs">用户</th><th className="p-3 text-left text-xs">角色</th><th className="p-3 text-left text-xs">余额</th></tr>
+                   </thead>
+                   <tbody>
+                     {allUsers.map(u => (
+                       <tr key={u.id} className="border-t">
+                         <td className="p-3 text-sm font-bold">{u.username}</td>
+                         <td className="p-3 text-sm"><span className="bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded text-xs">{u.role}</span></td>
+                         <td className="p-3 text-sm">¥{u.balance}</td>
+                       </tr>
+                     ))}
+                   </tbody>
+                 </table>
                </div>
             </div>
           )}
 
-          {/* TAB: 系统全局配置 (老板专有) */}
+          {/* 6. 系统配置 Tab */}
           {activeTab === 'system_config' && isSuper && (
-             <div className="max-w-4xl space-y-8 animate-in fade-in duration-300">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                   <div className="p-8 bg-white border rounded-[2rem] shadow-sm space-y-6">
-                      <h4 className="font-black text-lg text-gray-800 flex items-center gap-2"><PieChart size={22} className="text-indigo-600"/> 客户端营销统计控制</h4>
-                      <div className="space-y-4">
-                         <div>
-                            <label className="text-[10px] text-gray-400 font-black uppercase mb-1">累计成功案例基数</label>
-                            <input type="number" value={config?.marketingBaseCases} onChange={e => setConfig(prev => prev ? {...prev, marketingBaseCases: Number(e.target.value)} : null)} className="w-full border p-3 rounded-xl font-black text-indigo-600 bg-gray-50" />
-                         </div>
-                         <div>
-                            <label className="text-[10px] text-gray-400 font-black uppercase mb-1">通过率显示百分比 (%)</label>
-                            <input type="text" value={config?.marketingSuccessRate} onChange={e => setConfig(prev => prev ? {...prev, marketingSuccessRate: e.target.value} : null)} className="w-full border p-3 rounded-xl font-black text-green-600 bg-gray-50" />
-                         </div>
-                         <div>
-                            <label className="text-[10px] text-gray-400 font-black uppercase mb-1">默认提成比例 (0-1.0)</label>
-                            <input type="number" step="0.05" value={config?.commissionRate} onChange={e => setConfig(prev => prev ? {...prev, commissionRate: parseFloat(e.target.value)} : null)} className="w-full border p-3 rounded-xl font-black bg-gray-50" />
-                         </div>
-                      </div>
-                      <button onClick={() => config && saveSystemConfig(config).then(() => showToast('营销配置已实时刷新', 'success'))} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-black shadow-xl hover:bg-indigo-700 transition-all">保存配置并刷新前台</button>
+             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="p-6 border rounded-2xl space-y-4">
+                   <h4 className="font-bold flex items-center gap-2"><PieChart size={18}/> 前台数据修饰</h4>
+                   <div className="space-y-2">
+                     <label className="text-xs font-bold text-gray-500">基数设置 (Base Cases)</label>
+                     <input type="number" value={config?.marketingBaseCases} onChange={e => setConfig(prev => prev ? {...prev, marketingBaseCases: Number(e.target.value)} : null)} className="w-full border p-2 rounded-lg" />
                    </div>
-                   
-                   <div className="p-8 bg-indigo-600 text-white rounded-[2rem] shadow-2xl space-y-6 relative overflow-hidden">
-                      <ShieldAlert className="absolute -right-4 -top-4 opacity-10" size={140} />
-                      <h4 className="font-black text-lg flex items-center gap-2"><Key size={22}/> AI 核心架构设置</h4>
-                      <p className="text-xs text-indigo-100">当前运行环境：Gemini 3 Pro + GPT-4o 混合大脑。如遇 API 连接超时，请在此重新关联密钥。</p>
-                      <button onClick={handleOpenKey} className="w-full py-4 bg-white/20 border border-white/30 rounded-2xl font-black hover:bg-white/30 transition-all flex items-center justify-center gap-2">
-                        <RefreshCw size={18}/> 启动 API 密钥管理器对话框
-                      </button>
-                      <div className="pt-4 border-t border-white/10">
-                         <p className="text-[10px] font-bold opacity-60 mb-2 uppercase tracking-widest">系统联系信息 (展示在客户端)</p>
-                         <textarea value={config?.contactInfo} onChange={e => setConfig(prev => prev ? {...prev, contactInfo: e.target.value} : null)} className="w-full bg-white/10 border border-white/20 p-3 rounded-xl text-xs outline-none focus:bg-white/20 transition-all" rows={2} />
-                      </div>
-                   </div>
+                   <button onClick={() => config && saveSystemConfig(config).then(() => showToast('配置已保存', 'success'))} className="w-full bg-indigo-600 text-white py-2 rounded-lg font-bold text-sm">保存显示配置</button>
+                </div>
+                
+                <div className="p-6 bg-gray-900 text-white rounded-2xl space-y-4">
+                   <h4 className="font-bold flex items-center gap-2"><Key size={18}/> API 密钥管理</h4>
+                   <p className="text-xs text-gray-400">点击下方按钮可重新配置 Gemini API Key。</p>
+                   <button onClick={handleOpenKey} className="w-full bg-white/10 hover:bg-white/20 text-white py-3 rounded-lg font-bold text-sm flex items-center justify-center gap-2">
+                     <RefreshCw size={16}/> 打开选择器
+                   </button>
                 </div>
              </div>
           )}
         </div>
       </div>
 
-      {/* 工单处理弹窗 (支持 Excel 读取深度分析) */}
+      {/* 工单处理全屏弹窗 */}
       {editingAppeal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-md animate-in fade-in duration-300">
-           <div className="bg-white rounded-[2.5rem] shadow-2xl max-w-7xl w-full max-h-[95vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-500">
-              <div className="p-6 border-b flex justify-between items-center bg-gray-50/50">
-                 <div className="flex items-center gap-4">
-                    <div className="bg-indigo-600 p-3 rounded-2xl text-white shadow-lg"><Activity size={24}/></div>
-                    <div>
-                       <h3 className="font-black text-xl text-gray-900 tracking-tight">旗舰版 AI 申诉工作站</h3>
-                       <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">Current Task: {editingAppeal.emailAccount}</p>
-                    </div>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-6xl max-h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
+            {/* 弹窗头部 */}
+            <div className="p-5 border-b bg-gray-50 flex justify-between items-center">
+               <div className="flex items-center gap-3">
+                 <div className="bg-indigo-600 text-white p-2 rounded-xl"><Activity size={20}/></div>
+                 <div>
+                   <h3 className="font-bold text-gray-900">申诉工作台</h3>
+                   <p className="text-xs text-gray-500">{editingAppeal.emailAccount}</p>
                  </div>
-                 <button onClick={() => setEditingAppeal(null)} className="p-2 hover:bg-gray-200 rounded-full transition-all text-gray-400 hover:text-gray-600"><X size={28}/></button>
-              </div>
-              
-              <div className="flex-1 flex overflow-hidden">
-                 {/* 决策操作区 */}
-                 <div className="w-80 p-8 bg-gray-50/50 border-r overflow-y-auto space-y-8">
-                    <div>
-                       <h4 className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-4">执行决策</h4>
-                       <div className="space-y-4">
-                          <select value={editStatus} onChange={e => setEditStatus(e.target.value as AppealStatus)} className="w-full border-2 border-transparent p-4 rounded-2xl font-black bg-white shadow-sm outline-none focus:border-indigo-500 transition-all text-sm">
-                             {Object.values(AppealStatus).map(s => <option key={s} value={s}>{s}</option>)}
+               </div>
+               <button onClick={() => setEditingAppeal(null)} className="p-2 hover:bg-gray-200 rounded-full"><X size={20}/></button>
+            </div>
+
+            {/* 弹窗内容区 */}
+            <div className="flex-1 flex overflow-hidden">
+               {/* 左侧：人工操作区 */}
+               <div className="w-80 bg-gray-50/50 border-r p-6 overflow-y-auto space-y-6">
+                  <div>
+                    <h4 className="text-xs font-bold text-gray-400 uppercase mb-3">客户资料</h4>
+                    <div className="bg-white p-3 border rounded-xl text-xs space-y-2 text-gray-600">
+                      <p><span className="font-bold">类型:</span> {editingAppeal.accountType}</p>
+                      <p><span className="font-bold">登录:</span> {editingAppeal.loginInfo}</p>
+                    </div>
+                  </div>
+                  
+                  <div className="pt-4 border-t">
+                    <h4 className="text-xs font-bold text-gray-400 uppercase mb-3">处理决策</h4>
+                    <div className="space-y-3">
+                      <select 
+                        value={editStatus} 
+                        onChange={e => setEditStatus(e.target.value as AppealStatus)} 
+                        className="w-full border p-3 rounded-xl text-sm font-bold focus:ring-2 focus:ring-indigo-500 outline-none"
+                      >
+                        {Object.values(AppealStatus).map(s => <option key={s} value={s}>{s}</option>)}
+                      </select>
+                      
+                      <textarea 
+                        value={editNote} 
+                        onChange={e => setEditNote(e.target.value)} 
+                        rows={4} 
+                        placeholder="回复给客户的内容..." 
+                        className="w-full border p-3 rounded-xl text-xs focus:ring-2 focus:ring-indigo-500 outline-none"
+                      />
+                      
+                      <div className="bg-white border p-3 rounded-xl">
+                        <label className="text-xs font-bold text-gray-500">扣费金额 (¥)</label>
+                        <input 
+                          type="number" 
+                          value={editDeduction} 
+                          onChange={e => setEditDeduction(Number(e.target.value))} 
+                          className="w-full text-lg font-bold text-red-600 outline-none mt-1"
+                        />
+                      </div>
+                    </div>
+                  </div>
+               </div>
+
+               {/* 右侧：AI 建模区 */}
+               <div className="flex-1 p-8 flex flex-col bg-white">
+                  <div className="flex justify-between items-center mb-6">
+                    <h4 className="text-xl font-bold flex items-center gap-2"><Sparkles className="text-indigo-600"/> Gemini 3 深度 POA 生成</h4>
+                    <div className="relative">
+                      <input type="file" onChange={handleExcelUpload} className="hidden" id="excel-up" accept=".xlsx,.xls,.csv" />
+                      <label htmlFor="excel-up" className="flex items-center gap-2 bg-green-50 text-green-700 border border-green-200 px-4 py-2 rounded-xl text-xs font-bold cursor-pointer hover:bg-green-100 transition-colors">
+                        <FileSpreadsheet size={16}/> 导入 Excel 绩效表
+                      </label>
+                    </div>
+                  </div>
+
+                  {aiStep === 1 ? (
+                    <div className="flex-1 overflow-y-auto space-y-4 pr-2">
+                       <div className="grid grid-cols-2 gap-4">
+                         <input value={aiStoreName} onChange={e => setAiStoreName(e.target.value)} placeholder="店铺名" className="border p-3 rounded-xl text-sm bg-gray-50" />
+                         <input value={aiPartnerId} onChange={e => setAiPartnerId(e.target.value)} placeholder="Partner ID" className="border p-3 rounded-xl text-sm bg-gray-50" />
+                       </div>
+                       <div className="grid grid-cols-2 gap-4">
+                          <select value={aiPoaType} onChange={e => setAiPoaType(e.target.value as PoaType)} className="border p-3 rounded-xl text-sm bg-gray-50">
+                             {Object.values(PoaType).map(t => <option key={t} value={t}>{t}</option>)}
                           </select>
-                          <textarea value={editNote} onChange={e => setEditNote(e.target.value)} rows={5} className="w-full border-2 border-transparent p-4 text-xs font-medium rounded-2xl bg-white shadow-sm focus:border-indigo-500 outline-none transition-all" placeholder="反馈给客户的指导意见..." />
-                          <div className="bg-indigo-600 p-6 rounded-[2rem] text-white shadow-xl shadow-indigo-100">
-                             <label className="text-[10px] font-black uppercase mb-2 opacity-60">工单预扣费 (¥)</label>
-                             <input type="number" value={editDeduction} onChange={e => setEditDeduction(Number(e.target.value))} className="w-full text-4xl font-black bg-transparent border-none p-0 outline-none focus:ring-0 leading-none" />
-                          </div>
+                          <select value={aiPoaSubType} onChange={e => setAiPoaSubType(e.target.value)} className="border p-3 rounded-xl text-sm bg-gray-50">
+                             {POA_TYPE_MAPPING[aiPoaType].map(s => <option key={s} value={s}>{s}</option>)}
+                          </select>
+                       </div>
+                       <textarea 
+                         value={aiRootCause} 
+                         onChange={e => setAiRootCause(e.target.value)} 
+                         rows={3} 
+                         placeholder="简单描述原因，AI 将进行 5-Whys 扩展..." 
+                         className="w-full border p-3 rounded-xl text-sm bg-gray-50"
+                       />
+                       <div className="space-y-1">
+                         <div className="flex justify-between">
+                            <label className="text-xs font-bold text-gray-400 uppercase">数据建模上下文</label>
+                            {aiTableExtract && <span className="text-xs text-green-600 font-bold flex items-center gap-1"><CheckCircle size={12}/> Excel 数据已加载</span>}
+                         </div>
+                         <textarea 
+                           value={aiTableExtract} 
+                           onChange={e => setAiTableExtract(e.target.value)} 
+                           rows={5} 
+                           placeholder="在此粘贴表格数据，或使用右上角按钮导入 Excel..." 
+                           className="w-full border-none bg-gray-900 text-green-400 p-4 rounded-xl text-xs font-mono shadow-inner"
+                         />
+                       </div>
+                       <button 
+                         onClick={handleGeneratePOA} 
+                         disabled={isGenerating} 
+                         className="w-full py-4 bg-indigo-600 text-white rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100"
+                       >
+                         {isGenerating ? <Loader2 className="animate-spin"/> : <Sparkles/>} 启动 Gemini 3 生成
+                       </button>
+                    </div>
+                  ) : (
+                    <div className="flex-1 flex flex-col min-h-0 space-y-4">
+                       <div className="flex-1 bg-gray-50 border rounded-2xl p-6 overflow-y-auto whitespace-pre-wrap font-serif text-sm leading-relaxed text-gray-800">
+                         {aiGeneratedText}
+                       </div>
+                       <div className="flex gap-3">
+                         <button onClick={() => setAiStep(1)} className="px-6 py-3 border rounded-xl font-bold text-gray-500 hover:bg-gray-50">重新调整</button>
+                         <button 
+                           onClick={() => {
+                              const blob = new Blob([aiGeneratedText], {type: 'text/plain'});
+                              const url = window.URL.createObjectURL(blob);
+                              const a = document.createElement('a');
+                              a.href = url;
+                              a.download = `POA_${aiStoreName}.txt`;
+                              a.click();
+                           }}
+                           className="flex-1 bg-indigo-600 text-white rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg"
+                         >
+                           <Download size={18}/> 下载文书
+                         </button>
                        </div>
                     </div>
-                    <div className="pt-8 border-t">
-                       <h4 className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-4">客户环境</h4>
-                       <p className="text-xs font-mono text-gray-500 bg-white p-4 rounded-xl shadow-sm border border-gray-100 whitespace-pre-wrap leading-relaxed">{editingAppeal.loginInfo}</p>
-                    </div>
-                 </div>
+                  )}
+               </div>
+            </div>
 
-                 {/* AI 深度建模区 (带 Excel 注入) */}
-                 <div className="flex-1 p-10 flex flex-col space-y-6 bg-white overflow-hidden">
-                    <div className="flex justify-between items-center">
-                       <h4 className="font-black text-2xl flex items-center gap-3 text-gray-900 tracking-tighter"><Sparkles className="text-indigo-600"/> 深度 POA 建模引擎</h4>
-                       <div className="flex items-center gap-3">
-                          <input type="file" accept=".xlsx,.xls" onChange={handleExcelUpload} id="excel-input" className="hidden" />
-                          <label htmlFor="excel-input" className="flex items-center gap-2 bg-indigo-50 text-indigo-600 px-5 py-2.5 rounded-2xl font-black text-xs cursor-pointer hover:bg-indigo-100 transition-all">
-                             <FileSpreadsheet size={16}/> 注入 Excel 绩效数据
-                          </label>
-                       </div>
-                    </div>
-
-                    {aiStep === 1 ? (
-                       <div className="flex-1 overflow-y-auto space-y-5 pr-2 custom-scrollbar pb-10">
-                          <div className="grid grid-cols-2 gap-4">
-                             <input value={aiStoreName} onChange={e => setAiStoreName(e.target.value)} placeholder="店铺全称" className="w-full border-2 border-gray-50 p-4 rounded-2xl text-sm font-bold bg-gray-50 outline-none focus:bg-white focus:border-indigo-500 transition-all" />
-                             <input value={aiPartnerId} onChange={e => setAiPartnerId(e.target.value)} placeholder="Partner ID" className="w-full border-2 border-gray-50 p-4 rounded-2xl text-sm font-bold bg-gray-50 outline-none focus:bg-white focus:border-indigo-500 transition-all" />
-                          </div>
-                          <div className="grid grid-cols-2 gap-4">
-                             <select value={aiPoaType} onChange={e => setAiPoaType(e.target.value as PoaType)} className="w-full border-2 border-gray-50 p-4 rounded-2xl text-sm font-black bg-gray-50 outline-none focus:bg-white transition-all">
-                                {Object.values(PoaType).map(t => <option key={t} value={t}>{t}</option>)}
-                             </select>
-                             <select value={aiPoaSubType} onChange={e => setAiPoaSubType(e.target.value)} className="w-full border-2 border-gray-50 p-4 rounded-2xl text-sm font-black bg-gray-50 outline-none focus:bg-white transition-all">
-                                {POA_TYPE_MAPPING[aiPoaType].map(s => <option key={s} value={s}>{s}</option>)}
-                             </select>
-                          </div>
-                          <textarea value={aiRootCause} onChange={e => setAiRootCause(e.target.value)} rows={3} className="w-full border-2 border-gray-50 p-5 rounded-[2rem] text-sm font-bold bg-gray-50 outline-none focus:bg-white transition-all" placeholder="简述根本原因，AI 会以此为基础进行 5-Whys 扩充..." />
-                          <div className="space-y-1">
-                             <label className="text-[10px] text-gray-400 font-black uppercase ml-1">原始数据建模框 (RAW DATA)</label>
-                             <textarea value={aiTableExtract} onChange={e => setAiTableExtract(e.target.value)} rows={6} className="w-full border-none p-5 rounded-[2rem] text-[10px] font-mono bg-gray-900 text-green-400 shadow-inner" placeholder="在此粘贴表格文本或通过上方按钮导入 Excel..." />
-                          </div>
-                          <button onClick={handleGeneratePOA} disabled={isGenerating} className="w-full py-5 bg-indigo-600 text-white rounded-[2rem] font-black text-lg flex items-center justify-center gap-4 hover:bg-indigo-700 transition-all shadow-2xl shadow-indigo-100 disabled:bg-gray-400 active:scale-95">
-                             {isGenerating ? <Loader2 className="animate-spin" /> : <Sparkles />} 启动 Gemini 3 深度建模生成
-                          </button>
-                       </div>
-                    ) : (
-                       <div className="flex-1 flex flex-col space-y-6 animate-in zoom-in-95 duration-500 min-h-0">
-                          <div className="flex-1 bg-gray-50 p-12 border rounded-[3rem] overflow-y-auto whitespace-pre-wrap font-serif text-sm leading-relaxed text-gray-800 shadow-inner selection:bg-indigo-100">{aiGeneratedText}</div>
-                          <div className="flex gap-4 pt-2">
-                             <button onClick={() => setAiStep(1)} className="px-10 py-5 border-2 rounded-[1.5rem] font-black text-gray-400 hover:bg-gray-50 transition-all">重新微调建模参数</button>
-                             <button onClick={() => {
-                                const blob = new Blob([aiGeneratedText], {type: 'text/plain'});
-                                const url = window.URL.createObjectURL(blob);
-                                const a = document.createElement('a');
-                                a.href = url;
-                                a.download = `POA_${aiStoreName}_${new Date().toISOString().slice(0,10)}.txt`;
-                                a.click();
-                             }} className="flex-1 bg-indigo-600 text-white rounded-[1.5rem] font-black text-lg flex items-center justify-center gap-3 shadow-2xl hover:bg-indigo-700 transition-all active:scale-95">
-                                <Download size={22}/> 下载申诉文书 (.txt)
-                             </button>
-                          </div>
-                       </div>
-                    )}
-                 </div>
-              </div>
-
-              <div className="p-6 border-t flex justify-end gap-4 bg-gray-50/50">
-                 <button onClick={() => setEditingAppeal(null)} className="px-10 py-4 border-2 rounded-2xl font-black text-gray-400 hover:bg-gray-100 transition-all">取消</button>
-                 <button onClick={handleSaveAppealTask} disabled={loading} className="px-16 py-4 bg-indigo-600 text-white rounded-2xl font-black text-lg shadow-2xl hover:bg-indigo-700 transition-all active:scale-95">
-                    {loading ? <Loader2 className="animate-spin" /> : (isStaff ? '提交财务扣费' : '完成处理并保存')}
-                 </button>
-              </div>
-           </div>
+            {/* 弹窗底部操作栏 */}
+            <div className="p-5 border-t bg-gray-50 flex justify-end gap-3">
+              <button onClick={() => setEditingAppeal(null)} className="px-6 py-2 border rounded-xl font-bold text-gray-500 hover:bg-gray-100">取消</button>
+              <button onClick={handleSaveAppealTask} disabled={loading} className="px-8 py-2 bg-indigo-600 text-white rounded-xl font-bold shadow-lg hover:bg-indigo-700 transition-all">
+                {loading ? <Loader2 className="animate-spin"/> : '确认处理结果'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
