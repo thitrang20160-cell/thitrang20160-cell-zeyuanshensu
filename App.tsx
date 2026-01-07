@@ -13,11 +13,6 @@ const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [initLoading, setInitLoading] = useState(true);
 
-  const clearAndRedirect = () => {
-    setCurrentUser(null);
-    window.location.reload(); // 彻底清理状态并重新加载页面
-  };
-
   useEffect(() => {
     const initAuth = async () => {
       try {
@@ -46,8 +41,17 @@ const App: React.FC = () => {
   }, []);
 
   const handleLogout = async () => {
-    await signOut();
-    clearAndRedirect();
+    try {
+      await signOut();
+      setCurrentUser(null);
+      // 彻底清空本地缓存并强制刷新到首页，解决登录状态残留导致的转圈问题
+      window.localStorage.clear();
+      window.sessionStorage.clear();
+      window.location.replace('/');
+    } catch (err) {
+      console.error("Logout failed", err);
+      window.location.reload();
+    }
   };
 
   const refreshUser = useCallback(async () => {
@@ -65,7 +69,6 @@ const App: React.FC = () => {
     );
   }
 
-  // 判定是否为管理后台角色 (老板、员工、财务、营销)
   const isManagementRole = currentUser && currentUser.role !== UserRole.CLIENT;
 
   return (
