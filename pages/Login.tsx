@@ -1,8 +1,8 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { User } from '../types';
 import { signIn, signUp } from '../services/storageService';
-import { Eye, EyeOff, ShieldCheck, UserPlus, LogIn, Loader2, Mail, Hash } from 'lucide-react';
+import { Eye, EyeOff, ShieldCheck, UserPlus, LogIn, Loader2, Mail, Hash, RefreshCw } from 'lucide-react';
 
 interface LoginProps {
   onLogin: (user: User) => void;
@@ -18,6 +18,20 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
   const [error, setError] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [msg, setMsg] = useState('');
+
+  // UI Failsafe: If loading takes > 7 seconds, force reset
+  useEffect(() => {
+    let timer: any;
+    if (isLoading) {
+        timer = setTimeout(() => {
+            if (isLoading) {
+                setIsLoading(false);
+                setError('请求响应超时，请刷新页面后重试');
+            }
+        }, 7000);
+    }
+    return () => clearTimeout(timer);
+  }, [isLoading]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -38,12 +52,18 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
         else if (user) onLogin(user);
       } else {
         const { user, error: loginError } = await signIn(email, password);
-        if (loginError) setError(loginError);
-        else if (user) onLogin(user);
+        if (loginError) {
+             setError(loginError);
+        } else if (user) {
+             onLogin(user);
+             return; // Success, don't set loading false, let component unmount
+        }
       }
     } catch (err) {
       setError('网络连接错误');
     } finally {
+      // Only set loading false if we didn't succeed (if we succeeded, component unmounts)
+      // Actually, setting it false is fine, React will ignore updates on unmounted component
       setIsLoading(false);
     }
   };
@@ -96,8 +116,14 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
 
             <button type="submit" disabled={isLoading} className="w-full py-4 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-400 text-white font-bold rounded-2xl shadow-xl shadow-indigo-100 transition-all flex items-center justify-center gap-2 active:scale-95">
               {isLoading ? <Loader2 className="animate-spin" size={20} /> : (isRegistering ? <UserPlus size={20} /> : <LogIn size={20} />)}
-              {isRegistering ? '立即创建账户' : '安全认证并登录'}
+              {isRegistering ? '立即创建账户' : (isLoading ? '正在安全验证...' : '安全认证并登录')}
             </button>
+            
+            {isLoading && (
+                 <button type="button" onClick={() => window.location.reload()} className="w-full py-2 text-gray-400 text-xs hover:text-gray-600 flex items-center justify-center gap-1">
+                    <RefreshCw size={12}/> 等太久了？刷新重试
+                 </button>
+            )}
           </form>
 
           <div className="mt-8 text-center">

@@ -5,7 +5,29 @@ import { createClient } from '@supabase/supabase-js';
 const SUPABASE_URL = (import.meta as any).env.VITE_SUPABASE_URL || '';
 const SUPABASE_KEY = (import.meta as any).env.VITE_SUPABASE_ANON_KEY || '';
 
-export const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+export const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+  auth: {
+    persistSession: true,
+    autoRefreshToken: true,
+  },
+  db: {
+    schema: 'public',
+  },
+  // Add global fetch timeout configuration to prevent hanging requests
+  global: {
+    fetch: (url, options) => {
+      return fetch(url, { ...options, signal: AbortSignal.timeout(10000) }); // 10s global timeout
+    }
+  }
+});
+
+// Helper: Timeout Promise
+const withTimeout = <T>(promise: PromiseLike<T>, ms: number, label: string): Promise<T> => {
+    return Promise.race([
+        promise,
+        new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`${label} 请求超时，请检查网络`)), ms))
+    ]);
+};
 
 // --- Auth & Profile ---
 export const signUp = async (email: string, pass: string, inviteCode?: string): Promise<{ user: User | null, error: string | null }> => {
@@ -27,11 +49,36 @@ export const signUp = async (email: string, pass: string, inviteCode?: string): 
 };
 
 export const signIn = async (email: string, pass: string): Promise<{ user: User | null, error: string | null }> => {
-  const { data: authData, error: authError } = await supabase.auth.signInWithPassword({ email, password: pass });
-  if (authError) return { user: null, error: '账号或密码错误' };
-  
-  const { data: profile } = await supabase.from('users').select('*').eq('id', authData.user.id).single();
-  return { user: profile as User, error: null };
+  try {
+      // 1. Auth Login (Usually fast)
+      const { data: authData, error: authError } = await withTimeout(
+          supabase.auth.signInWithPassword({ email, password: pass }),
+          8000,
+          "身份验证"
+      );
+      
+      if (authError) return { user: null, error: '账号或密码错误' };
+      if (!authData.user) return { user: null, error: '登录异常，无用户数据' };
+      
+      // 2. Profile Fetch (Often hangs if DB is slow) - Enforce 5s Timeout
+      const { data: profile, error: dbError } = await withTimeout(
+          supabase.from('users').select('*').eq('id', authData.user.id).single(),
+          5000, 
+          "获取用户资料"
+      );
+
+      if (dbError) {
+          console.error("Login DB Error:", dbError);
+          // If we logged in but can't get profile, we should probably sign out to stay clean
+          await supabase.auth.signOut();
+          return { user: null, error: '无法获取用户信息，请稍后重试' };
+      }
+      
+      return { user: profile as User, error: null };
+  } catch (e: any) {
+      console.error("SignIn Exception:", e);
+      return { user: null, error: e.message || '登录请求超时' };
+  }
 };
 
 export const signOut = async () => {
@@ -49,11 +96,14 @@ export const getCurrentUserProfile = async (): Promise<User | null> => {
         return null;
     }
 
-    const { data, error } = await supabase.from('users').select('*').eq('id', session.user.id).single();
+    // Add explicit timeout to profile fetch on load
+    const { data, error } = await withTimeout(
+        supabase.from('users').select('*').eq('id', session.user.id).single(),
+        5000,
+        "自动登录"
+    );
     
     // Ghost Session Detection:
-    // If we have a session but NO user profile in the DB, the state is corrupted.
-    // We must clear it to prevent infinite loops.
     if (error || !data) {
         console.warn("Ghost session detected (Auth valid but DB profile missing). Clearing...");
         await signOut(); 
@@ -63,6 +113,7 @@ export const getCurrentUserProfile = async (): Promise<User | null> => {
     return data as User;
   } catch (e) {
     console.error("Profile fetch error", e);
+    // If timeout occurs during auto-login, we might return null to force re-login
     return null;
   }
 };
