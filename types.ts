@@ -1,133 +1,97 @@
+export type ViolationType = 'IP' | 'Counterfeit' | 'Performance' | 'Related' | 'Other';
+export type SupplyChainType = 'Private Label' | 'Authorized Distributor' | 'Wholesale' | 'Dropshipping';
+export type CaseStatus = 'pending' | 'reviewed' | 'submitted' | 'rejected' | 'success' | 'fail';
 
-export enum UserRole {
-  SUPER_ADMIN = 'SUPER_ADMIN', // 老板
-  ADMIN = 'ADMIN',             // 员工/技术
-  FINANCE = 'FINANCE',         // 财务
-  MARKETING = 'MARKETING',     // 营销
-  CLIENT = 'CLIENT',           // 客户
-}
+export type UserRole = 'super_admin' | 'admin' | 'client';
 
-export enum AppealStatus {
-  PENDING = '待处理',
-  PROCESSING = '处理中',
-  FOLLOW_UP = '跟进中',
-  PASSED_PENDING_DEDUCTION = '申诉通过-待扣费', // 员工操作后的中间状态
-  PASSED = '申诉通过-已扣费', // 最终闭环状态
-  REJECTED = '申诉驳回',
-}
-
-export enum TransactionType {
-  RECHARGE = '充值',
-  DEDUCTION = '扣费',
-  COMMISSION = '营销提成', // 营销员的收入
-  STAFF_BONUS = '员工绩效', // 新增：申诉专员的提成
-}
-
-export enum TransactionStatus {
-  PENDING = '待审核',
-  APPROVED = '已入账',
-  REJECTED = '已拒绝',
-}
+export type AIProvider = 'gemini' | 'deepseek';
 
 export interface User {
   id: string;
   username: string;
-  phone?: string;
+  password?: string; // In a real app, never store plain text passwords!
   role: UserRole;
-  balance: number;
-  marketingCode?: string; // 营销员的专属邀请码
-  referredBy?: string;    // 客户关联的营销码
-  createdAt: string;
+  companyName?: string; // For clients
 }
 
-export interface Appeal {
+export interface CaseData {
   id: string;
-  userId: string;
-  username: string;
-  accountType: string;
-  loginInfo: string;
-  emailAccount: string;
-  emailPass: string;
-  description?: string;
-  screenshot?: string;
-  status: AppealStatus;
-  statusDetail?: string;
-  adminNotes: string;
-  deductionAmount: number;
-  generatedPoa?: string;
-  handlerId?: string; // 核心修复：记录是谁处理了这个工单，用于结算绩效
+  userId: string; // New: Links case to a specific user
   createdAt: string;
-  updatedAt: string;
+  clientName?: string;
+  clientId?: string;
+  
+  // New Fields for Formal POA
+  companyName: string; // Legal Entity Name for Signature
+  caseId: string;      // Walmart Case ID / Reference ID
+  
+  // Smart Data Filling
+  affectedCount?: string; // e.g. "14 SKUs" or "5 Orders"
+  supplierInfo?: string;  // e.g. "verified domestic supplier"
+  
+  suspensionEmail: string;
+  storeName: string;
+  productCategory: string;
+  supplyChain: SupplyChainType;
+  violationType: ViolationType;
+  sellerExplanation: string;
+  actionsTaken: string;
+  poaContent: string;
+  cnExplanation: string;
+  status: CaseStatus;
+  notes?: string;
+  fileEvidenceSummary?: string; // Metadata about uploaded file
+  
+  // Submission Meta
+  submissionTime?: string;
+  walmartCaseNumber?: string;
+  
+  // V5.1 ODR Specifics
+  isODRSuspension?: boolean; // If true, limits char count per section
 }
 
-export interface Transaction {
+export interface ReferenceCase {
   id: string;
-  userId: string;
-  username: string;
-  type: TransactionType;
-  amount: number;
-  status: TransactionStatus;
-  appealId?: string; // 必须关联申诉案件，否则无法计算员工绩效
-  note?: string;
-  createdAt: string;
-}
-
-export interface SystemConfig {
-  contactInfo: string;
-  paymentQrUrl?: string;
-  commissionRate: number; // 营销提成比例 (如 0.1)
-  staffBonusRate?: number; // 新增：员工提成比例 (如 0.1)
-  marketingBaseCases?: number;
-  marketingSuccessRate?: string;
-  marketingBaseProcessing?: number;
-  aiStats?: { 
-    totalPoa: number;
-    apiCalls: number;
-  };
-}
-
-export enum PoaType {
-  ACCOUNT_SUSPENSION = '店铺账户暂停 (Account Suspension)',
-  FULFILLMENT_SUSPENSION = '自发货权限暂停 (Fulfillment Suspension)',
-  OTHER = '其他问题'
-}
-
-export const POA_TYPE_MAPPING: Record<PoaType, string[]> = {
-  [PoaType.ACCOUNT_SUSPENSION]: [
-    'OTD (发货及时率低) - 导致封店',
-    'VTR (物流追踪率低) - 导致封店',
-    '取消率过高 - 导致封店',
-    '退款率过高 - 导致封店',
-    '知识产权 - 商标侵权 (Trademark)',
-    '知识产权 - 版权侵权 (Copyright)',
-    '知识产权 - 专利侵权 (Patent)',
-    '知识产权 - 假冒商品 (Counterfeit)',
-    '操控评论 (Review Manipulation)',
-    '客户欺诈投诉 (Customer Fraud Complaint)',
-    '二审/身份验证 (Identity Verification)',
-    '违反销售政策 (Prohibited Items)',
-    '关联账户 (Related Accounts)',
-    '其他 - 导致封店'
-  ],
-  [PoaType.FULFILLMENT_SUSPENSION]: [
-    'OTD (发货及时率低) - 暂停自发货',
-    'VTR (物流追踪率低) - 暂停自发货',
-    '取消率过高 - 暂停自发货'
-  ],
-  [PoaType.OTHER]: [
-    '退货地址验证',
-    '资金冻结申诉',
-    '其他非账号问题'
-  ]
-};
-
-export interface KnowledgeBaseItem {
-  id: string;
-  type: PoaType;
-  subType: string;
   title: string;
-  content: string;
-  tags?: string[];
-  createdAt: string;
-  usageCount: number;
+  type: ViolationType;
+  content: string; // The successful POA text
+  tags: string[];
+}
+
+export interface Stats {
+  total: number;
+  success: number;
+  fail: number;
+  pending: number;
+  submitted: number;
+  successRate: number;
+}
+
+export interface RiskAnalysis {
+  score: number; // 0-100
+  level: 'Low' | 'Medium' | 'High';
+  reasons: string[];
+}
+
+export interface GlobalSettings {
+  // Provider Selection
+  selectedProvider: AIProvider;
+  
+  // Keys
+  apiKey: string; // Gemini Key
+  deepseekKey: string; // DeepSeek Key
+  
+  // Cloud Database (Supabase)
+  supabaseUrl: string;
+  supabaseKey: string; // Anon Key
+
+  // Walmart API Credentials
+  walmartClientId: string;
+  walmartClientSecret: string;
+  enableSimulationMode: boolean; // If true, mocks the API call
+  
+  // Strategy
+  strategyGeneral: string;
+  strategyLogistics: string;
+  strategyIP: string;
 }
